@@ -1,0 +1,37 @@
+[project]
+version = "0.1.0"
+name = "madpack"
+cincludes = []
+cobjects = []
+pkgconfig = []
+cflags = []
+
+[dependencies]
+mem     = "1"
+log     = "1"
+slice   = "1"
+buffer  = "1"
+hex     = "1"
+byteorder   = "1"
+err     = "1"
+json    = "1"
+
+[repos]
+
+
+
+[[artifacts]]
+name = "madpack"
+type = "lib"
+main = "madpack"
+
+[[artifacts]]
+name = "madpack"
+type = "exe"
+main = "madpack::main"
+
+[[artifacts]]
+name = "madpack"
+type = "cmake"
+main = "madpack::main"
+

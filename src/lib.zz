@@ -1,0 +1,803 @@
+using log;
+using slice;
+using hex;
+using buffer;
+using byteorder;
+using err;
+using mem;
+using <string.h>::{memmove};
+
+export enum Item {
+    Invalid,
+    Uint,
+    Sint,
+    Float,
+    String,
+    Bytes,
+    Map,
+    Array,
+    True,
+    False,
+    Null
+}
+
+export struct Index+ {
+    usize count;
+    slice::Slice items[512];
+
+    slice::mut_slice::MutSlice memsl;
+    buffer::Buffer+ mut mem;
+}
+
+export fn index(Index+t mut new *self)
+{
+    mem::zero(self);
+    static_attest(buffer::integrity(&self->mem, t));
+    self->memsl = self->mem.as_mut_slice();
+}
+
+export fn preshared_index(Index+t mut new *self, slice::slice::Slice v)
+    where slice::slice::integrity(&v)
+{
+    new+10 noidx = index();
+    new dc = decode_array(v, &noidx);
+    while dc.next() {
+        switch dc.item {
+            Item::String => {
+                if self->count >= static(len(self->items)) {
+                    return;
+                }
+                self->items[self->count] = dc.value.v_slice;
+                self->count+=1;
+
+                log::info("preshared index %d: %.*s", self->count, dc.value.v_slice.size, dc.value.v_slice.mem);
+            }
+        }
+   }
+}
+
+export fn to_preshared_index(Index *self) -> slice::slice::Slice
+    model slice::slice::integrity(&return)
+{
+    static_attest(slice::mut_slice::integrity(&self->memsl));
+    return self->memsl.as_slice();
+}
+
+fn gindex(Index mut*self, slice::slice::Slice key) -> usize
+    where slice::slice::integrity(&key)
+{
+    static_attest(slice::mut_slice::integrity(&self->memsl));
+    static_attest(self->count <= len(self->items));
+    for (usize mut i = 0 ; i < self->count; i++) {
+        slice::Slice * sl = self->items + i;
+        static_attest(safe(sl));
+        static_attest(slice::slice::integrity(sl));
+        if sl->eq(key) {
+            return i + 1;
+        }
+    }
+
+
+    if key.size <= 0xff {
+        if !self->memsl.push(0x8c) || !self->memsl.push((u8)key.size) {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+
+
+    usize ca = *self->memsl.at;
+    if !self->memsl.append_slice(key) {
+        return 0;
+    }
+
+    if self->count >= static(len(self->items)) {
+        return 0;
+    }
+    self->items[self->count] = slice::slice::Slice {
+        mem:    unsafe<u8*>(self->memsl.mem + ca),
+        size:   key.size,
+    };
+    self->count+=1;
+    return 0;
+}
+
+fn lookup(Index mut*self, u16 mut i) -> slice::slice::Slice
+    model slice::slice::integrity(&return)
+{
+    i -=1;
+    static_attest(self->count <= len(self->items));
+    if (usize)i >= self->count {
+        new+100 b = buffer::make();
+        b.format("%u", i + 1);
+        self->gindex(b.as_slice());
+        if (usize)i >= self->count {
+            return slice::slice::Slice{
+                mem: (u8*)"missing",
+                size: 7,
+            };
+        } else {
+            let r = self->items[(usize)i];
+            static_attest(slice::slice::integrity(&r));
+            return r;
+        }
+    }
+    let r = self->items[(usize)i];
+    static_attest(slice::slice::integrity(&r));
+    return r;
+}
+
+
+export struct Tuning {
+    u8 config;
+}
+
+
+export struct Encoder {
+    slice::mut_slice::MutSlice  sl;
+    Tuning tuning;
+    Index mut * unsafe index;
+}
+
+export theory integrity(Encoder mut*self) -> bool
+(
+    slice::mut_slice::integrity(&self->sl)
+)
+
+export fn encode(Encoder mut new*self, slice::mut_slice::MutSlice mut sl, Index mut * unsafe index)
+    where slice::mut_slice::integrity(&sl)
+    model integrity(self)
+{
+    *self = Encoder {
+        sl,
+        index,
+    };
+}
+
+export fn kv_uint(Encoder mut * self, char *key, u64 value) -> bool
+    where nullterm(key)
+    where integrity(self)
+    model integrity(self)
+{
+    if value <= 0xff {
+        return  self->key(key, 0x00) &&
+                self->sl.push((u8)value);
+    } else if value <= 0xffff {
+        return  self->key(key, 0x20) &&
+                self->sl.push16(byteorder::to_le16((u16)value));
+    } else {
+        return  self->key(key, 0xe0) &&
+                self->v_uint(value);
+    }
+}
+
+export fn v_uint(Encoder mut * self, u64 value) -> bool
+    where integrity(self)
+    model integrity(self)
+{
+    if value <= 111 {
+        return self->sl.push((u8)value);
+    } else if value <= 0xff {
+        return  self->sl.push(0x70) &&
+                self->sl.push((u8)value);
+    } else if value <= 0xffff {
+        return  self->sl.push(0x71) &&
+                self->sl.push16(byteorder::to_le16((u16)value));
+    } else if value <= 0xffffffff{
+        return  self->sl.push(0x72) &&
+                self->sl.push32(byteorder::to_le32((u32)value));
+    } else {
+        return  self->sl.push(0x73) &&
+                self->sl.push64(byteorder::to_le64((u64)value));
+    }
+}
+
+export fn kv_cstr(Encoder mut * self, char *key, char * value) -> bool
+    where nullterm(key)
+    where nullterm(value)
+    where integrity(self)
+    model integrity(self)
+{
+    let vl = buffer::strlen(value);
+    if vl <= 0xff {
+        return  self->key(key, 0x80) &&
+                self->sl.push((u8)vl) &&
+                self->sl.append_cstr(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn v_cstr(Encoder mut * self, char * value) -> bool
+    where nullterm(value)
+    where integrity(self)
+    model integrity(self)
+{
+    let vl = buffer::strlen(value);
+    if vl <= 0xff {
+        return  self->sl.push(0x8c) &&
+                self->sl.push((u8)vl) &&
+                self->sl.append_cstr(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn kv_array(Encoder mut * self, char *key, u16 count ) -> bool
+    where nullterm(key)
+    where integrity(self)
+    model integrity(self)
+{
+    if count <= 0xff {
+        return  self->key(key, 0xc0) &&
+                self->sl.push((u8)count);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn v_array(Encoder mut * self, u16 count ) -> bool
+    where integrity(self)
+    model integrity(self)
+{
+    if count <= 0xff {
+        return  self->sl.push(0xbc) &&
+                self->sl.push((u8)count);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn kv_map(Encoder mut * self, char *key, u16 count ) -> bool
+    where nullterm(key)
+    where integrity(self)
+    model integrity(self)
+{
+    if count <= 0xff {
+        return  self->key(key, 0xa0) &&
+                self->sl.push((u8)count);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn v_map(Encoder mut * self, u16 count ) -> bool
+    where integrity(self)
+    model integrity(self)
+{
+    if count <= 0xff {
+        return  self->sl.push(0xac) &&
+                self->sl.push((u8)count);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn kv_null(Encoder mut * self, char *key) -> bool
+    where nullterm(key)
+    where integrity(self)
+    model integrity(self)
+{
+    return  self->key(key, 0xe0) &&
+            self->sl.push(0x78);
+}
+
+export fn v_null(Encoder mut * self) -> bool
+    where integrity(self)
+    model integrity(self)
+{
+    return self->sl.push(0x78);
+}
+
+export fn kv_bool(Encoder mut * self, char *key, bool value) -> bool
+    where nullterm(key)
+    where integrity(self)
+    model integrity(self)
+{
+    if value {
+        return  self->key(key, 0xe0) &&
+                self->sl.push(0x79);
+    } else {
+        return  self->key(key, 0xe0) &&
+                self->sl.push(0x7a);
+    }
+}
+
+export fn v_bool(Encoder mut * self, bool value) -> bool
+    where integrity(self)
+    model integrity(self)
+{
+    if value {
+        return self->sl.push(0x79);
+    } else {
+        return self->sl.push(0x7a);
+    }
+}
+
+fn key(Encoder mut * self, char *keystr, u8 valbits) -> bool
+    where nullterm(keystr)
+    where integrity(self)
+    model integrity(self)
+{
+    log::info("encoding key %s", keystr);
+    usize mut idx = 0;
+    if self->index != 0 {
+        static_attest(safe(self->index));
+        let k = slice::slice::Slice{
+            mem:    (u8*)keystr,
+            size:   buffer::strlen(keystr),
+        };
+        idx = gindex(self->index, k);
+    }
+    if idx != 0 {
+        log::info(" as %d", idx);
+        if idx <= 0x1b {
+            return self->sl.push((u8)idx | valbits);
+        } else if idx <= 0xff {
+            return self->sl.push(0x1c | valbits) && self->sl.push((u8)idx);
+        } else {
+            return self->sl.push(0x1d | valbits) && self->sl.push16(byteorder::to_le16(idx));
+        }
+    }
+
+    let bl = buffer::strlen(keystr);
+    if bl < 0xff {
+        return  self->sl.push(valbits | 0x1e) &&
+                self->sl.push((u8)bl) &&
+                self->sl.append_cstr(keystr);
+    } else {
+        return  self->sl.push(valbits | 0x1f) &&
+                self->sl.push16(byteorder::to_le16((u16)bl)) &&
+                self->sl.append_cstr(keystr);
+    }
+
+
+
+    return true;
+}
+
+
+// ------- decoder
+
+
+export union Value {
+    u64                     v_uint;
+    i64                     v_sint;
+    f64                     v_float;
+    slice::slice::Slice     v_slice;
+}
+
+
+export struct Decoder
+{
+    slice::slice::Slice sl;
+    usize mut at;
+    Index mut * index;
+    bool is_array;
+
+
+    slice::Slice    key;
+    Item            item;
+    Value           value;
+}
+
+
+export fn decode_map(Decoder mut new * self, slice::slice::Slice sl, Index mut * index)
+    where slice::slice::integrity(&sl)
+{
+    mem::zero(self);
+    self->sl = sl;
+    self->index = index;
+    self->is_array = false;
+}
+
+export fn decode_array(Decoder mut new * self, slice::slice::Slice sl, Index mut * index)
+    where slice::slice::integrity(&sl)
+{
+    mem::zero(self);
+    self->sl = sl;
+    self->index = index;
+    self->is_array = true;
+}
+
+
+export fn next(Decoder mut new * self) -> bool
+{
+    if self->is_array {
+        return self->decode_avalue();
+    }
+
+    static_attest(slice::slice::integrity(&self->sl));
+    static_attest(safe(self->index));
+
+    if self->at >= self->sl.size {
+        return false;
+    }
+
+    u8 c = self->sl.mem[self->at];
+    self->at += 1;
+
+    u16 mut idxt = (u16)(c & 0x1f);
+    switch idxt {
+        0x00 => {
+            return false;
+        }
+        0x1c => {
+            if self->at >= self->sl.size {
+                return false;
+            }
+            idxt = (u16)self->sl.mem[self->at];
+            self->at += 1;
+            self->key = self->index->lookup(idxt);
+        }
+        0x1d => {
+            static_attest(self->at < self->sl.size);
+            if self->at + 2 >= self->sl.size  || self->at  >= self->sl.size {
+                return false;
+            }
+
+            u8 mut * m = (u8 mut*)&idxt;
+            static_attest(len(m) == 2);
+            mem::copy(self->sl.mem + self->at, m, 2);
+            idxt = (u16)byteorder::from_le16(idxt);
+            self->at += 2;
+            self->key = self->index->lookup(idxt);
+        }
+        0x1e => {
+            static_attest(self->at < self->sl.size);
+
+            if self->at >= self->sl.size {
+                return false;
+            }
+            idxt = (u16)self->sl.mem[self->at];
+            self->at += 1;
+
+            if self->at >= self->sl.size {
+                return false;
+            }
+
+            self->key = slice::slice::Slice {
+                mem:    self->sl.mem + self->at,
+                size:   (usize)idxt,
+            };
+            self->at += (usize)idxt;
+            static_attest(slice::slice::integrity(&self->key));
+            self->index->gindex(self->key);
+
+        }
+        0x1f => {
+            static_attest(self->at < self->sl.size);
+
+            if self->at + 2 >= self->sl.size  || self->at  >= self->sl.size {
+                return false;
+            }
+
+            u8 mut * m = (u8 mut*)&idxt;
+            static_attest(len(m) == 2);
+            mem::copy(self->sl.mem + self->at, m, 2);
+            idxt = (u16)byteorder::from_le16(idxt);
+            self->at += 2;
+
+            self->key = slice::slice::Slice {
+                mem:    self->sl.mem + self->at,
+                size:   (usize)idxt,
+            };
+            static_attest(slice::slice::integrity(&self->key));
+            self->at += (usize)idxt;
+            self->index->gindex(self->key);
+        }
+        default => {
+            self->key = self->index->lookup(idxt);
+        }
+    }
+
+    u8 vt = c & 0xe0;
+    switch vt {
+        0x00 => {
+            self->item = Item::Uint;
+
+            if self->at >= self->sl.size {
+                return false;
+            }
+
+            u8 val = self->sl.mem[self->at];
+            self->value.v_uint = (u64)val;
+            self->at += 1;
+        }
+        0x20  => {
+            self->item = Item::Uint;
+
+            if self->at + 2 > self->sl.size  || self->at  >= self->sl.size {
+                log::info("short read", vt);
+                return false;
+            }
+
+            u16 mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 2);
+            mem::copy(self->sl.mem + self->at, m, 2);
+            self->value.v_uint = (u64)byteorder::from_le16(val);
+            self->at += 2;
+        }
+        0x40 => {
+            self->item = Item::Float;
+
+            if self->at + 4 > self->sl.size  || self->at  >= self->sl.size {
+                return false;
+            }
+
+            u32 mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 4);
+            mem::copy(self->sl.mem + self->at, m, 4);
+            self->value.v_float = (f64)((f32)byteorder::from_le32(val));
+            self->at += 4;
+        }
+        0x60, 0x80 , 0xa0, 0xc0  => {
+            switch vt {
+                0x60 => {
+                    self->item = Item::Bytes;
+                }
+                0x80 => {
+                    self->item = Item::String;
+                }
+                0xa0 => {
+                    self->item = Item::Map;
+                }
+                0xc0 => {
+                    self->item = Item::Array;
+                }
+            }
+
+            if self->at >= self->sl.size {
+                return false;
+            }
+            usize l = (usize)self->sl.mem[self->at];
+            self->at += 1;
+
+            if l == 0 {
+                slice::slice::empty(&self->value.v_slice);
+            } else {
+                if self->at >= self->sl.size || self->at + l > self->sl.size{
+                    return false;
+                }
+
+                self->value.v_slice = slice::slice::Slice {
+                    mem: self->sl.mem + self->at,
+                    size: l
+                };
+                self->at += l;
+            }
+        }
+        0xe0 => {
+            return self->decode_avalue();
+        }
+    }
+    return true;
+}
+
+
+fn decode_avalue(Decoder mut new * self) -> bool
+{
+    static_attest(slice::slice::integrity(&self->sl));
+    static_attest(safe(self->index));
+
+    if self->at >= self->sl.size {
+        return false;
+    }
+
+    u8 eb = self->sl.mem[self->at];
+    self->at += 1;
+    switch eb {
+        0x70, 0x74  => {
+            switch eb {
+                0x70    => { self->item = Item::Uint; }
+                0x74    => { self->item = Item::Sint; }
+            }
+
+            if self->at >= self->sl.size {
+                return false;
+            }
+
+            u8 val = self->sl.mem[self->at];
+            self->value.v_uint = (u64)val;
+            self->at += 1;
+        }
+        0x71, 0x75 => {
+            switch eb {
+                0x71    => { self->item = Item::Uint; }
+                0x75    => { self->item = Item::Sint; }
+            }
+
+            if self->at + 2 > self->sl.size  || self->at  >= self->sl.size {
+                return false;
+            }
+
+            u16 mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 2);
+            mem::copy(self->sl.mem + self->at, m, 2);
+            self->value.v_uint = (u64)byteorder::from_le16(val);
+            self->at += 2;
+        }
+        0x72, 0x76,0x7b => {
+            switch eb {
+                0x72    => { self->item = Item::Uint;   }
+                0x76    => { self->item = Item::Sint;   }
+                0x7b    => { self->item = Item::Float;  }
+            }
+
+            if self->at + 4 > self->sl.size  || self->at  >= self->sl.size {
+                return false;
+            }
+
+            u32 mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 4);
+            mem::copy(self->sl.mem + self->at, m, 4);
+            self->value.v_uint = (u64)byteorder::from_le32(val);
+            self->at += 4;
+        }
+        0x73, 0x77, 0x7c => {
+            switch eb {
+                0x73    => { self->item = Item::Uint; }
+                0x77    => { self->item = Item::Sint; }
+                0x7c    => { self->item = Item::Float;  }
+            }
+
+            if self->at + 8 > self->sl.size  || self->at  >= self->sl.size {
+                return false;
+            }
+
+            u64 mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 8);
+            mem::copy(self->sl.mem + self->at, m, 8);
+            self->value.v_uint = byteorder::from_le64(val);
+            self->at += 8;
+        }
+        0x78 => {
+            self->item = Item::Null;
+        }
+        0x79 => {
+            self->item = Item::True;
+        }
+        0x7a => {
+            self->item = Item::False;
+        }
+        0x80, 0x90, 0xa0 , 0xb0  => {
+            switch eb{
+                0x80 => { self->item = Item::String; }
+                0x90 => { self->item = Item::Bytes;  }
+                0xa0 => { self->item = Item::Map;  }
+                0xb0 => { self->item = Item::Array;  }
+            }
+            slice::slice::empty(&self->value.v_slice);
+        }
+        0x8c, 0x9c, 0xac, 0xbc  => {
+            static_attest(self->at < self->sl.size);
+            switch eb{
+                0x8c => { self->item = Item::String; }
+                0x9c => { self->item = Item::Bytes;  }
+                0xac => { self->item = Item::Map;  }
+                0xbc => { self->item = Item::Array;  }
+            }
+            slice::slice::empty(&self->value.v_slice);
+
+            if self->at >= self->sl.size || self->at + 1 >= self->sl.size{
+                log::warn("8bit len short read");
+                return false;
+            }
+
+            let size  = (usize)self->sl.mem[self->at];
+            self->at += 1;
+            self->value.v_slice = slice::slice::Slice {
+                mem:    self->sl.mem + self->at,
+                size:   size,
+            };
+            self->at += size;
+        }
+        0x8d, 0x9d, 0xad, 0xbd  => {
+            static_attest(self->at < self->sl.size);
+            switch eb{
+                0x8d => { self->item = Item::String; }
+                0x9d => { self->item = Item::Bytes;  }
+                0xad => { self->item = Item::Map;  }
+                0xbd => { self->item = Item::Array;  }
+            }
+            slice::slice::empty(&self->value.v_slice);
+
+            if self->at >= self->sl.size || self->at + 2 >= self->sl.size{
+                log::warn("16bit len short read");
+                return false;
+            }
+
+            u16 mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 2);
+            mem::copy(self->sl.mem + self->at, m, 2);
+            self->at += 2;
+            usize size = (usize)byteorder::from_le16(val);
+
+            self->value.v_slice = slice::slice::Slice {
+                mem:    self->sl.mem + self->at,
+                size:   size,
+            };
+            self->at += size;
+        }
+        0x8e, 0x9e, 0xae, 0xbe  => {
+            static_attest(self->at < self->sl.size);
+            switch eb{
+                0x8e => { self->item = Item::String; }
+                0x9e => { self->item = Item::Bytes;  }
+                0xae => { self->item = Item::Map;  }
+                0xbe => { self->item = Item::Array;  }
+            }
+            slice::slice::empty(&self->value.v_slice);
+
+            if self->at >= self->sl.size || self->at + 4 >= self->sl.size{
+                log::warn("32bit len short read");
+                return false;
+            }
+
+            u32 mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 4);
+            mem::copy(self->sl.mem + self->at, m, 4);
+            self->at += 4;
+            usize size = (usize)byteorder::from_le32(val);
+
+            self->value.v_slice = slice::slice::Slice {
+                mem:    self->sl.mem + self->at,
+                size:   size,
+            };
+            self->at += size;
+        }
+        0x8f, 0x9f, 0xaf, 0xbf  => {
+            static_attest(self->at < self->sl.size);
+            switch eb{
+                0x8f => { self->item = Item::String; }
+                0x9f => { self->item = Item::Bytes;  }
+                0xaf => { self->item = Item::Map;  }
+                0xbf => { self->item = Item::Array;  }
+            }
+            slice::slice::empty(&self->value.v_slice);
+
+            if self->at >= self->sl.size || self->at + 8 >= self->sl.size{
+                log::warn("64bit len short read");
+                return false;
+            }
+
+            u64  mut val = 0;
+            u8 mut * m = (u8 mut*)&val;
+            static_attest(len(m) == 8);
+            mem::copy(self->sl.mem + self->at, m, 8);
+            self->at += 8;
+            usize size = (usize)byteorder::from_le64(val);
+
+            self->value.v_slice = slice::slice::Slice {
+                mem:    self->sl.mem + self->at,
+                size:   size,
+            };
+            self->at += size;
+        }
+        default => {
+            if eb <= 0x6f {
+                self->item = Item::Uint;
+                self->value.v_uint = (u64)eb
+            } else {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+
