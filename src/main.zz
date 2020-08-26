@@ -11,8 +11,7 @@ using json;
 using <stdio.h>::{fread, stdin,stderr, stdout, printf, fopen, fclose, FILE, fwrite};
 
 
-
-fn json_break_kv(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p)
+fn json_break_kv(json::U *u, err::Err+et mut * e, json::Parser+pt mut* p)
     where err::checked(*e)
 {
     madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
@@ -165,7 +164,7 @@ fn json_encode_map(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, char 
                 return;
             }
 
-            if !enc->kv_map(k, 0xff) {
+            if !enc->kv_start_map(k, 0xff) {
                 e->fail(err::OutOfTail, "oom");
             }
         }
@@ -181,7 +180,7 @@ fn json_encode_map(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, char 
                 return;
             }
 
-            if !enc->kv_array(k, 0xff) {
+            if !enc->kv_start_array(k, 0xff) {
                 e->fail(err::OutOfTail, "oom");
             }
 
@@ -232,7 +231,7 @@ fn json_encode_array(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, cha
             if err::check(e) {
                 return;
             }
-            if !enc->v_map(0xff) {
+            if !enc->v_start_map(0xff) {
                 e->fail(err::OutOfTail, "oom");
             }
         }
@@ -248,7 +247,7 @@ fn json_encode_array(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, cha
                 return;
             }
 
-            if !enc->v_array(0xff) {
+            if !enc->v_start_array(0xff) {
                 e->fail(err::OutOfTail, "oom");
             }
 
@@ -284,7 +283,7 @@ export fn main(int argc, char ** argv) -> int
 {
     new+1000 e = err::make();
 
-    new+1000 idx = madpack::index();
+    new+1000 idx = madpack::empty_index();
 
     bool mut mode_unpack = false;
     bool mut mode_index_make = false;
@@ -313,7 +312,7 @@ export fn main(int argc, char ** argv) -> int
             }
 
             fclose(fd);
-            madpack::preshared_index(&idx, b.as_slice());
+            madpack::from_preshared_index(&idx, b.as_slice());
 
         } else if unsafe<bool>(buffer::cstr_eq(argv[i], "--make-index")) {
             mode_index_make = true;

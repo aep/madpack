@@ -6,6 +6,8 @@ using byteorder;
 using err;
 using mem;
 using <string.h>::{memmove};
+using json;
+using madpack::macro;
 
 export enum Item {
     Invalid,
@@ -22,6 +24,7 @@ export enum Item {
 }
 
 export struct Index+ {
+    usize preshared_byte_at;
     usize count;
     slice::Slice items[512];
 
@@ -29,17 +32,20 @@ export struct Index+ {
     buffer::Buffer+ mut mem;
 }
 
-export fn index(Index+t mut new *self)
+export fn empty_index(Index+t mut new *self)
 {
     mem::zero(self);
     static_attest(buffer::integrity(&self->mem, t));
     self->memsl = self->mem.as_mut_slice();
 }
 
-export fn preshared_index(Index+t mut new *self, slice::slice::Slice v)
+export fn from_preshared_index(Index+t mut new *self, slice::slice::Slice v)
     where slice::slice::integrity(&v)
 {
-    new+10 noidx = index();
+    empty_index(self);
+    static_attest(slice::mut_slice::integrity(&self->memsl));
+
+    new+10 noidx = empty_index();
     new dc = decode_array(v, &noidx);
     while dc.next() {
         switch dc.item {
@@ -47,13 +53,24 @@ export fn preshared_index(Index+t mut new *self, slice::slice::Slice v)
                 if self->count >= static(len(self->items)) {
                     return;
                 }
-                self->items[self->count] = dc.value.v_slice;
-                self->count+=1;
-
-                log::info("preshared index %d: %.*s", self->count, dc.value.v_slice.size, dc.value.v_slice.mem);
+                static_attest(slice::slice::integrity(&dc.value.v_slice));
+                self->gindex(dc.value.v_slice);
+            }
+            default => {
+                if self->count >= static(len(self->items)) {
+                    return;
+                }
+                slice::slice::Slice mut es;
+                slice::slice::empty(&es);
+                self->gindex(es);
             }
         }
    }
+   self->preshared_byte_at = *self->memsl.at;
+}
+
+export macro preshare() {
+    macro::preshare();
 }
 
 export fn to_preshared_index(Index *self) -> slice::slice::Slice
@@ -63,7 +80,7 @@ export fn to_preshared_index(Index *self) -> slice::slice::Slice
     return self->memsl.as_slice();
 }
 
-fn gindex(Index mut*self, slice::slice::Slice key) -> usize
+pub fn gindex(Index mut*self, slice::slice::Slice key) -> usize
     where slice::slice::integrity(&key)
 {
     static_attest(slice::mut_slice::integrity(&self->memsl));
@@ -155,6 +172,14 @@ export fn encode(Encoder mut new*self, slice::mut_slice::MutSlice mut sl, Index 
     };
 }
 
+export fn as_slice(Encoder *self) -> slice::slice::Slice
+    where integrity(self)
+    model slice::slice::integrity(&return)
+
+{
+    return self->sl.as_slice();
+}
+
 export fn kv_uint(Encoder mut * self, char *key, u64 value) -> bool
     where nullterm(key)
     where integrity(self)
@@ -193,6 +218,22 @@ export fn v_uint(Encoder mut * self, u64 value) -> bool
     }
 }
 
+export fn kv_byteslice(Encoder mut * self, char *key, slice::Slice value) -> bool
+    where nullterm(key)
+    where slice::slice::integrity(&value)
+    where integrity(self)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->key(key, 0x60) &&
+                self->sl.push((u8)value.size) &&
+                self->sl.append_slice(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
 export fn kv_cstr(Encoder mut * self, char *key, char * value) -> bool
     where nullterm(key)
     where nullterm(value)
@@ -226,7 +267,7 @@ export fn v_cstr(Encoder mut * self, char * value) -> bool
     }
 }
 
-export fn kv_array(Encoder mut * self, char *key, u16 count ) -> bool
+export fn kv_start_array(Encoder mut * self, char *key, u16 count ) -> bool
     where nullterm(key)
     where integrity(self)
     model integrity(self)
@@ -240,7 +281,23 @@ export fn kv_array(Encoder mut * self, char *key, u16 count ) -> bool
     }
 }
 
-export fn v_array(Encoder mut * self, u16 count ) -> bool
+export fn kv_array(Encoder mut * self, char *key, slice::Slice value) -> bool
+    where slice::slice::integrity(&value)
+    where nullterm(key)
+    where integrity(self)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->key(key, 0xc0) &&
+                self->sl.push((u8)value.size ) &&
+                self->sl.append_slice(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn v_start_array(Encoder mut * self, u16 count ) -> bool
     where integrity(self)
     model integrity(self)
 {
@@ -253,7 +310,22 @@ export fn v_array(Encoder mut * self, u16 count ) -> bool
     }
 }
 
-export fn kv_map(Encoder mut * self, char *key, u16 count ) -> bool
+export fn v_array(Encoder mut * self, slice::Slice value) -> bool
+    where slice::slice::integrity(&value)
+    where integrity(self)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->sl.push(0xbc) &&
+                self->sl.push((u8)value.size) &&
+                self->sl.append_slice(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn kv_start_map(Encoder mut * self, char *key, u16 count ) -> bool
     where nullterm(key)
     where integrity(self)
     model integrity(self)
@@ -267,13 +339,45 @@ export fn kv_map(Encoder mut * self, char *key, u16 count ) -> bool
     }
 }
 
-export fn v_map(Encoder mut * self, u16 count ) -> bool
+export fn kv_map(Encoder mut * self, char *key, slice::Slice value) -> bool
+    where nullterm(key)
+    where slice::slice::integrity(&value)
+    where integrity(self)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->key(key, 0xa0) &&
+                self->sl.push((u8)value.size) &&
+                self->sl.append_slice(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+
+export fn v_start_map(Encoder mut * self, u16 count ) -> bool
     where integrity(self)
     model integrity(self)
 {
     if count <= 0xff {
         return  self->sl.push(0xac) &&
                 self->sl.push((u8)count);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn v_map(Encoder mut * self, slice::Slice value) -> bool
+    where integrity(self)
+    where slice::slice::integrity(&value)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->sl.push(0xac) &&
+                self->sl.push((u8)value.size) &&
+                self->sl.append_slice(value);
     } else {
         //TODO
         return false;
@@ -320,6 +424,69 @@ export fn v_bool(Encoder mut * self, bool value) -> bool
         return self->sl.push(0x7a);
     }
 }
+/*
+fn key(Encoder mut * self, char *keystr, u8 valbits) -> bool
+    where nullterm(keystr)
+    where integrity(self)
+    model integrity(self)
+{
+    log::info("encoding key %s", keystr);
+    let ksl = buffer::strlen(keystr);
+
+    static_attest(safe(self->index));
+
+    bool mut newstring = true;
+    usize mut idx = 0;
+
+    let k = slice::slice::Slice{
+        mem:    (u8*)keystr,
+        size:   ksl,
+    };
+    idx = gindex(self->index, k);
+
+    if idx == 0 {
+        idx = self->index->count;
+    } else {
+        newstring = false;
+    }
+
+    if newstring {
+        log::info(" as new %d", idx);
+        if idx <= 0xff && ksl <= 0xff {
+            return  self->sl.push(0x1c | valbits) &&
+                    self->sl.push((u8)idx) &&
+                    self->sl.push((u8)ksl) &&
+                    self->sl.append_slice(k);
+        } else if idx <= 0xff {
+            return  self->sl.push(0x1d | valbits) &&
+                    self->sl.push((u8)idx) &&
+                    self->sl.push16(byteorder::to_le16((u16)ksl)) &&
+                    self->sl.append_slice(k);
+        } else if ksl <= 0xff {
+            return  self->sl.push(0x1e | valbits) &&
+                    self->sl.push((u8)idx) &&
+                    self->sl.push((u8)ksl) &&
+                    self->sl.append_slice(k);
+        } else {
+            return  self->sl.push(0x1f | valbits) &&
+                    self->sl.push16(byteorder::to_le16(idx)) &&
+                    self->sl.push16(byteorder::to_le16((u16)ksl)) &&
+                    self->sl.append_slice(k);
+        }
+    } else {
+        log::info(" as %d", idx);
+        if idx <= 0x19 {
+            return self->sl.push((u8)idx | valbits);
+        } else if idx <= 0xff {
+            return self->sl.push(0x1a | valbits) && self->sl.push((u8)idx);
+        } else {
+            return self->sl.push(0x1b | valbits) && self->sl.push16(byteorder::to_le16(idx));
+        }
+    }
+
+    return true;
+}
+*/
 
 fn key(Encoder mut * self, char *keystr, u8 valbits) -> bool
     where nullterm(keystr)
