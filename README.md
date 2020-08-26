@@ -95,18 +95,20 @@ if you ever loose the index, you can still read the message and guess the key na
     010x xxxx 0x40 f32
     011x xxxx 0x60 bytes  u8
     100x xxxx 0x80 string u8
-    101x xxxx 0xa0 map    u8
-    110x xxxx 0xc0 array  u8
+    101x xxxx 0xa0 map
+    110x xxxx 0xc0 array
     111x xxxx 0xe0 full value byte follows
+
 
     xxx0 0000 0x00 reserved
     xxx0 0001 0x01 index 1
-    xxx1 1011 0x1b index 27
-    xxx1 1100 0x1c u8
-    xxx1 1101 0x1d u16
-    xxx1 1110 0x1e string u8
-    xxx1 1111 0x1f string u16
+    xxx1 1010 0x1a index 26
+    xxx1 1011 0x1b u8
+    xxx1 1100 0x1c u16
+    xxx1 1101 0x1d string u8
+    xxx1 1110 0x1e string u16
 
+    1111 1111 0xff end
 
 ### value byte
 
@@ -129,18 +131,18 @@ if you ever loose the index, you can still read the message and guess the key na
     0111 1011 0x7b  f32
 
     0111 1100 0x7c  f64
-    0111 1101 0x7d  reserved
-    0111 1110 0x7e  reserved
+    0111 1101 0x7d  map
+    0111 1110 0x7e  array
     0111 1111 0x7f  ext
 
     dynamic size:
 
     1000 xxxx 0x80 string
     1001 xxxx 0x90 bytes
-    1010 xxxx 0xa0 map
-    1011 xxxx 0xb0 array
-    1100 xxxx 0xc0 reserved for bigint
-    1101 xxxx 0xd0 reserved for typed array
+    1010 xxxx 0xa0 reserved
+    1011 xxxx 0xb0 reserved
+    1100 xxxx 0xc0 reserved
+    1101 xxxx 0xd0 reserved
     1110 xxxx 0xe0 reserved
     1111 xxxx 0xf0 reserved
 
@@ -150,6 +152,9 @@ if you ever loose the index, you can still read the message and guess the key na
          1101 size see next 2 bytes
          1110 size see next 4 bytes
          1111 size see next 8 bytes
+
+
+    1111 1111 0xff end
 
 
 

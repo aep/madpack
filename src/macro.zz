@@ -1,0 +1,124 @@
+using json;
+using err;
+using buffer;
+using log;
+using madpack;
+using slice;
+using <stdio.h>::{stdin, printf};
+
+
+
+fn parse_v(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    let index = (madpack::Index mut *)u->user1;
+    static_attest(safe(index));
+
+    if buffer::cstr_eq(k, "v") {
+        switch v.t {
+            json::ValueType::String => {
+                static_attest(safe(v.string));
+                static_attest(nullterm(v.string));
+
+                index->gindex(slice::slice::Slice{
+                    mem:    (u8*)v.string,
+                    size:   buffer::strlen(v.string),
+                });
+            }
+            default => {
+            }
+        }
+    }
+}
+
+
+fn parse_value(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    let index = (madpack::Index mut *)u->user1;
+    static_attest(safe(index));
+
+    if v.t == json::ValueType::Object && buffer::cstr_eq(k, "LiteralString") {
+        json::next(p,  e, json::U{it:parse_v, user1: u->user1});
+        if err::check(e) { return; }
+    } else if v.t == json::ValueType::Object && buffer::cstr_eq(k, "Literal") {
+        new n = slice::slice::empty();
+        index->gindex(n);
+    }
+}
+
+fn parse_array_field(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    if v.t == json::ValueType::Object {
+        json::next(p,  e, json::U{it:parse_value, user1: u->user1});
+        if err::check(e) { return; }
+    }
+}
+
+fn parse_array_init(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    if v.t == json::ValueType::Array && buffer::cstr_eq(k, "fields") {
+        json::next(p,  e, json::U{it:parse_array_field, user1: u->user1} );
+        if err::check(e) { return; }
+    }
+}
+
+fn parse_arg(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    if v.t == json::ValueType::Object && buffer::cstr_eq(k, "ArrayInit") {
+        json::next(p,  e, json::U{it:parse_array_init, user1: u->user1} );
+        if err::check(e) { return; }
+    }
+}
+
+fn parse_arglist(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    if v.t == json::ValueType::Object {
+        json::next(p,  e, json::U { it: parse_arg, user1: u->user1 });
+        if err::check(e) { return; }
+    }
+}
+
+fn parse_doc(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    if v.t == json::ValueType::Array {
+        if buffer::cstr_eq(k, "args") {
+            json::next(p,  e, json::U{ it: parse_arglist, user1: u->user1} );
+            if err::check(e) { return; }
+        }
+    }
+}
+
+pub fn preshare() {
+    new+1000 e = err::make();
+    new+1000 idx = madpack::empty_index();
+
+    new+1000 parser = json::parser(&e, json::U{ it: parse_doc, user1: &idx} );
+    e.abort();
+
+    new+10000 s = buffer::make();
+    for (; s.fgets(stdin) ; s.clear()) {
+        json::push(&parser, &e, s.mem, s.at);
+        e.abort();
+    }
+
+    static_attest(slice::mut_slice::integrity(&idx.memsl));
+
+    printf("slice::slice::Slice{ mem: (u8*)\"");
+    for (usize mut i = 0; i < *idx.memsl.at; i++) {
+        printf("\\x%02x", idx.memsl.mem[i]);
+    }
+    printf("\", size: %d }", *idx.memsl.at);
+}

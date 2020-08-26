@@ -11,273 +11,6 @@ using json;
 using <stdio.h>::{fread, stdin,stderr, stdout, printf, fopen, fclose, FILE, fwrite};
 
 
-fn json_break_kv(json::U *u, err::Err+et mut * e, json::Parser+pt mut* p)
-    where err::checked(*e)
-{
-    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
-    err::assert_safe(enc);
-    static_attest(madpack::integrity(enc));
-
-    usize index_byte_at = u->user2;
-    err::assert(index_byte_at < enc->sl.size);
-
-    usize mut val_length_at = u->user2 + 1;
-
-    usize mut idxt = (usize)(enc->sl.mem[index_byte_at] & 0x1f);
-    log::info("idxt: %x", idxt);
-    switch idxt {
-        0x1c => {
-            val_length_at += 1;
-        }
-        0x1d => {
-            val_length_at += 2;
-        }
-        0x1e => {
-            static_attest(index_byte_at + 1 < enc->sl.size);
-            idxt = (usize)enc->sl.mem[index_byte_at + 1];
-            val_length_at += 1 + idxt;
-        }
-        0x1f => {
-            static_attest(index_byte_at + 3 < enc->sl.size);
-            u8 mut * m = (u8 mut*)&idxt;
-            static_attest(len(m) == 2);
-            mem::copy(enc->sl.mem + index_byte_at + 1, m, 2);
-            idxt = (usize)byteorder::from_le16(idxt);
-            val_length_at += 1 + idxt;
-        }
-        default => {
-        }
-    }
-
-    usize used = *enc->sl.at - val_length_at - 1;
-    static_attest(val_length_at < enc->sl.size);
-
-    if used <= 0xff {
-        enc->sl.mem[val_length_at] = (u8)used;
-    } else if used <= 0xffff {
-        // was too large for u8, move everything 2 bytes (1 ext + 2 u16 - 1 u8) to the right
-
-        *enc->sl.at += 2;
-        if *enc->sl.at > enc->sl.size {
-            e->fail(err::OutOfTail, "oom");
-            return;
-        }
-        for (usize mut i = *enc->sl.at; i > val_length_at; i--) {
-            unsafe {
-                enc->sl.mem[i] = enc->sl.mem[i - 2];
-            }
-        }
-
-        static_attest(u->user2 - 2 < len(enc->sl.mem));
-        static_attest(u->user2 + 1 < len(enc->sl.mem));
-        u8 original_type = (enc->sl.mem[index_byte_at] & 0xe0);
-        switch original_type {
-            0x60 => { // bytes
-                enc->sl.mem[val_length_at] = 0x9d;
-            }
-            0x80 => { // string
-                enc->sl.mem[val_length_at] = 0x8d;
-            }
-            0xa0 => { // map
-                enc->sl.mem[val_length_at] = 0xad;
-            }
-            0xc0 => { // array
-                enc->sl.mem[val_length_at] = 0xbd;
-            }
-            default => {
-                e->fail(err::InvalidArgument, "bug in json encoder. type byte is %x", enc->sl.mem[u->user2 - 2]);
-            }
-        }
-        enc->sl.mem[index_byte_at] = enc->sl.mem[index_byte_at] | 0xe0;
-
-        u16 nl = byteorder::to_le16((u16)used);
-        u8  *nlmem = (u8*)&nl;
-        static_attest(len(nlmem) == 2);
-        enc->sl.mem[val_length_at + 1] = nlmem[0];
-        enc->sl.mem[val_length_at + 2] = nlmem[1];
-
-
-    } else {
-        e->fail(err::OutOfTail, "embedded structure doesnt fit into u16");
-    }
-}
-
-fn json_break_a(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p)
-    where err::checked(*e)
-{
-    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
-    err::assert_safe(enc);
-    static_attest(madpack::integrity(enc));
-
-    usize index_byte_at = u->user2;
-    err::assert(index_byte_at < enc->sl.size);
-    usize mut val_length_at = u->user2 + 1;
-
-    usize used = *enc->sl.at - val_length_at - 1;
-    static_attest(val_length_at < enc->sl.size);
-
-    if used <= 0xff {
-        enc->sl.mem[val_length_at] = (u8)used;
-    } else if used <= 0xffff {
-        enc->sl.mem[index_byte_at] = (enc->sl.mem[index_byte_at] & 0xf0) | 0x0d;
-        *enc->sl.at += 1;
-        if *enc->sl.at > enc->sl.size {
-            e->fail(err::OutOfTail, "oom");
-            return;
-        }
-        for (usize mut i = *enc->sl.at; i > val_length_at; i--) {
-            unsafe {
-                enc->sl.mem[i] = enc->sl.mem[i - 1];
-            }
-        }
-
-        u16 nl = byteorder::to_le16(used);
-        u8  *nlmem = (u8*)&nl;
-        static_attest(len(nlmem) == 2);
-        enc->sl.mem[val_length_at + 0] = nlmem[0];
-        enc->sl.mem[val_length_at + 1] = nlmem[1];
-
-
-    } else {
-        e->fail(err::OutOfTail, "embedded structure doesnt fit into u16");
-    }
-}
-
-fn json_encode_map(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
-    err::assert_safe(enc);
-    static_attest(madpack::integrity(enc));
-
-    switch v.t {
-        json::ValueType::Object => {
-
-            json::next(p,  e, json::U{
-                it:     json_encode_map,
-                user1:  enc,
-                user2:  *enc->sl.at,
-                pop:    json_break_kv,
-            });
-            if err::check(e) {
-                return;
-            }
-
-            if !enc->kv_start_map(k, 0xff) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Array => {
-
-            json::next(p,  e, json::U{
-                it:     json_encode_array,
-                user1:  enc,
-                user2:  *enc->sl.at,
-                pop:    json_break_kv,
-            });
-            if err::check(e) {
-                return;
-            }
-
-            if !enc->kv_start_array(k, 0xff) {
-                e->fail(err::OutOfTail, "oom");
-            }
-
-        }
-        json::ValueType::String => {
-            static_attest(safe(v.string));
-            static_attest(nullterm(v.string));
-            if !enc->kv_cstr(k, v.string) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Integer => {
-            //TODO uuuh this can be negative
-            if !enc->kv_uint(k, v.integer) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Boolean => {
-            if !enc->kv_bool(k, v.integer) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Null => {
-            if !enc->kv_null(k) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-    }
-}
-
-fn json_encode_array(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
-    err::assert_safe(enc);
-    static_attest(madpack::integrity(enc));
-
-    switch v.t {
-        json::ValueType::Object => {
-
-            json::next(p,  e, json::U{
-                it:     json_encode_map,
-                user1:  enc,
-                user2:  *enc->sl.at,
-                pop:    json_break_a,
-            });
-            if err::check(e) {
-                return;
-            }
-            if !enc->v_start_map(0xff) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Array => {
-
-            json::next(p,  e, json::U{
-                it:     json_encode_array,
-                user1:  enc,
-                user2:  *enc->sl.at,
-                pop:    json_break_a,
-            });
-            if err::check(e) {
-                return;
-            }
-
-            if !enc->v_start_array(0xff) {
-                e->fail(err::OutOfTail, "oom");
-            }
-
-        }
-        json::ValueType::String => {
-            static_attest(safe(v.string));
-            static_attest(nullterm(v.string));
-            if !enc->v_cstr(v.string) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Integer => {
-            //TODO uuuh this can be negative
-            if !enc->v_uint(v.integer) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Boolean => {
-            if !enc->v_bool(v.integer) {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-        json::ValueType::Null => {
-            if !enc->v_null() {
-                e->fail(err::OutOfTail, "oom");
-            }
-        }
-    }
-}
-
 export fn main(int argc, char ** argv) -> int
     where (usize)argc < len(argv)
 {
@@ -341,7 +74,8 @@ export fn main(int argc, char ** argv) -> int
         }
 
         printf("{");
-        map2json(b.as_slice(), &idx, 1);
+        new dc = madpack::decode(b.as_slice(), &idx);
+        json_decode(&dc, true, 1);
         printf("\n}\n");
 
     } else {
@@ -350,8 +84,9 @@ export fn main(int argc, char ** argv) -> int
         new enc = madpack::encode(b.as_mut_slice(), &idx);
 
         new+1000 parser = json::parser(&e, json::U{
-            it:     json_encode_map,
+            it:     json_encode,
             user1:  &enc,
+            user2:  1,
         });
         e.abort();
 
@@ -381,12 +116,23 @@ export fn main(int argc, char ** argv) -> int
     return 0;
 }
 
-fn array2json(slice::slice::Slice sl, madpack::Index mut * idx, usize indent)
-    where slice::slice::integrity(&sl)
+
+fn json_decode(madpack::Decoder mut * dc, bool ismap, usize indent)
 {
     bool mut first = true;
-    new dc = madpack::decode_array(sl, idx);
-    while dc.next() {
+    for (;;) {
+        if ismap {
+            if !dc->next_kv() {
+                break;
+            }
+        } else {
+            if !dc->next_v() {
+                break;
+            }
+        }
+        if dc->item == madpack::Item::End {
+            break;
+        }
         if first {
             first = false;
             printf("\n");
@@ -396,7 +142,10 @@ fn array2json(slice::slice::Slice sl, madpack::Index mut * idx, usize indent)
         for (usize mut i = 0; i < indent; i++) {
             printf("  ");
         }
-        switch dc.item {
+        if ismap {
+            printf("\"%.*s\" : ", dc->key.size, dc->key.mem);
+        }
+        switch dc->item {
             madpack::Item::Invalid   => {
                 printf("\"invalid\"");
             }
@@ -410,24 +159,23 @@ fn array2json(slice::slice::Slice sl, madpack::Index mut * idx, usize indent)
                 printf("false");
             }
             madpack::Item::Float     => {
-                printf("%f", dc.value.v_float);
+                printf("%f", dc->value.v_float);
             }
             madpack::Item::Uint      => {
-                printf("%u", dc.value.v_uint);
+                printf("%u", dc->value.v_uint);
             }
             madpack::Item::Sint      => {
-                printf("%d", dc.value.v_sint);
+                printf("%d", dc->value.v_sint);
             }
             madpack::Item::String    => {
-                printf("\"%.*s\"", dc.value.v_slice.size, dc.value.v_slice.mem);
+                printf("\"%.*s\"", dc->value.v_slice.size, dc->value.v_slice.mem);
             }
             madpack::Item::Bytes     => {
                 printf("\"bytes\"");
             }
             madpack::Item::Map       => {
                 printf("{");
-                static_attest(slice::slice::integrity(&dc.value.v_slice));
-                map2json(dc.value.v_slice, idx, indent + 1 );
+                json_decode(dc, true, indent + 1 );
                 printf("\n");
                 for (usize mut i = 0; i < indent; i++) {
                     printf("  ");
@@ -436,8 +184,7 @@ fn array2json(slice::slice::Slice sl, madpack::Index mut * idx, usize indent)
             }
             madpack::Item::Array     => {
                 printf("[");
-                static_attest(slice::slice::integrity(&dc.value.v_slice));
-                array2json(dc.value.v_slice, idx, indent + 1 );
+                json_decode(dc, false, indent + 1 );
                 printf("\n");
                 for (usize mut i = 0; i < indent; i++) {
                     printf("  ");
@@ -449,72 +196,119 @@ fn array2json(slice::slice::Slice sl, madpack::Index mut * idx, usize indent)
 }
 
 
-fn map2json(slice::slice::Slice sl, madpack::Index mut * idx, usize indent)
-    where slice::slice::integrity(&sl)
+fn json_encode_end(json::U *u, err::Err+et mut * e, json::Parser+pt mut* p)
+    where err::checked(*e)
 {
-    bool mut first = true;
-    new dc = madpack::decode_map(sl, idx);
-    while dc.next() {
-        if first {
-            first = false;
-            printf("\n");
-        } else {
-            printf(",\n");
-        }
-        for (usize mut i = 0; i < indent; i++) {
-            printf("  ");
-        }
-        printf("\"%.*s\" : ", dc.key.size, dc.key.mem);
-        switch dc.item {
-            madpack::Item::Invalid   => {
-                printf("\"invalid\"");
-            }
-            madpack::Item::Null      => {
-                printf("null");
-            }
-            madpack::Item::True      => {
-                printf("true");
-            }
-            madpack::Item::False     => {
-                printf("false");
-            }
-            madpack::Item::Float     => {
-                printf("%f", dc.value.v_float);
-            }
-            madpack::Item::Uint      => {
-                printf("%u", dc.value.v_uint);
-            }
-            madpack::Item::Sint      => {
-                printf("%d", dc.value.v_sint);
-            }
-            madpack::Item::String    => {
-                printf("\"%.*s\"", dc.value.v_slice.size, dc.value.v_slice.mem);
-            }
-            madpack::Item::Bytes     => {
-                printf("\"bytes\"");
-            }
-            madpack::Item::Map       => {
-                printf("{");
-                static_attest(slice::slice::integrity(&dc.value.v_slice));
-                map2json(dc.value.v_slice, idx, indent + 1 );
-                printf("\n");
-                for (usize mut i = 0; i < indent; i++) {
-                    printf("  ");
+    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
+    err::assert_safe(enc);
+    static_attest(madpack::integrity(enc));
+
+    enc->end();
+}
+
+fn json_encode(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
+    where err::checked(*e)
+    where nullterm(k)
+{
+    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
+    err::assert_safe(enc);
+    static_attest(madpack::integrity(enc));
+
+    switch v.t {
+        json::ValueType::Object => {
+
+            if u->user2 == 1 {
+                if !enc->kv_map(k) {
+                    e->fail(err::OutOfTail, "oom");
                 }
-                printf("}");
-            }
-            madpack::Item::Array     => {
-                printf("[");
-                hex::dump_slice(dc.value.v_slice);
-                static_attest(slice::slice::integrity(&dc.value.v_slice));
-                array2json(dc.value.v_slice, idx, indent + 1 );
-                printf("\n");
-                for (usize mut i = 0; i < indent; i++) {
-                    printf("  ");
+            } else {
+                if !enc->v_map() {
+                    e->fail(err::OutOfTail, "oom");
                 }
-                printf("]");
+            }
+
+            json::next(p,  e, json::U{
+                it:     json_encode,
+                user1:  enc,
+                user2:  1,
+                pop:    json_encode_end,
+            });
+            if err::check(e) {
+                return;
+            }
+
+        }
+        json::ValueType::Array => {
+
+            if u->user2 == 1 {
+                if !enc->kv_array(k) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            } else {
+                if !enc->v_array() {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            }
+
+            json::next(p,  e, json::U{
+                it:     json_encode,
+                user1:  enc,
+                user2:  0,
+                pop:    json_encode_end,
+            });
+            if err::check(e) {
+                return;
+            }
+
+
+        }
+        json::ValueType::String => {
+            static_attest(safe(v.string));
+            static_attest(nullterm(v.string));
+
+            if u->user2 == 1 {
+                if !enc->kv_cstr(k, v.string) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            } else {
+                if !enc->v_cstr(v.string) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            }
+        }
+        json::ValueType::Integer => {
+            //TODO uuuh this can be negative
+            if u->user2 == 1 {
+                if !enc->kv_uint(k, v.integer) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            } else {
+                if !enc->v_uint(v.integer) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            }
+        }
+        json::ValueType::Boolean => {
+            if u->user2 == 1 {
+                if !enc->kv_bool(k, v.integer) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            } else {
+                if !enc->v_bool(v.integer) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            }
+        }
+        json::ValueType::Null => {
+            if u->user2 == 1 {
+                if !enc->kv_null(k) {
+                    e->fail(err::OutOfTail, "oom");
+                }
+            } else {
+                if !enc->v_null() {
+                    e->fail(err::OutOfTail, "oom");
+                }
             }
         }
     }
 }
-
