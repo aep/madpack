@@ -162,7 +162,7 @@ fn json_decode(madpack::Decoder mut * dc, bool ismap, usize indent)
                 printf("%f", dc->value.v_float);
             }
             madpack::Item::Uint      => {
-                printf("%u", dc->value.v_uint);
+                printf("%llu", dc->value.v_uint);
             }
             madpack::Item::Sint      => {
                 printf("%d", dc->value.v_sint);

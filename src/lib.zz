@@ -7,7 +7,7 @@ using err;
 using mem;
 using <string.h>::{memmove};
 using json;
-using madpack::macro;
+using madpack::macrohelper;
 
 export enum Item {
     Invalid,
@@ -70,8 +70,8 @@ export fn from_preshared_index(Index+t mut new *self, slice::slice::Slice v)
    self->preshared_byte_at = *self->memsl.at;
 }
 
-export macro preshare() {
-    macro::preshare();
+export macro preshare(){
+    macrohelper::preshare();
 }
 
 export fn to_preshared_index(Index *self) -> slice::slice::Slice
@@ -95,16 +95,6 @@ pub fn gindex(Index mut*self, slice::slice::Slice key) -> usize
         }
     }
 
-
-    if key.size <= 0xff {
-        if !self->memsl.push(0x8c) || !self->memsl.push((u8)key.size) {
-            return 0;
-        }
-    } else {
-        return 0;
-    }
-
-
     usize ca = *self->memsl.at;
     if !self->memsl.append_slice(key) {
         return 0;
@@ -124,21 +114,28 @@ pub fn gindex(Index mut*self, slice::slice::Slice key) -> usize
 fn lookup(Index mut*self, u16 mut i) -> slice::slice::Slice
     model slice::slice::integrity(&return)
 {
-    i -=1;
+    static_attest(slice::mut_slice::integrity(&self->memsl));
     static_attest(self->count <= len(self->items));
+
+    i -=1;
     if (usize)i >= self->count {
+
+
         new+100 b = buffer::make();
-        b.format("%u", i + 1);
-        self->gindex(b.as_slice());
-        if (usize)i >= self->count {
+        b.format("%d", i + 1);
+        let k = b.as_slice();
+
+        usize ca = *self->memsl.at;
+        if i >= static(len(self->items)) || !self->memsl.append_slice(k) {
             return slice::slice::Slice{
                 mem: (u8*)"missing",
                 size: 7,
             };
         } else {
-            let r = self->items[(usize)i];
-            static_attest(slice::slice::integrity(&r));
-            return r;
+            self->items[(usize)i] = slice::slice::Slice {
+                mem:    unsafe<u8*>(self->memsl.mem + ca),
+                size:   k.size,
+            };
         }
     }
     let r = self->items[(usize)i];
@@ -235,6 +232,23 @@ export fn kv_byteslice(Encoder mut * self, char *key, slice::Slice value) -> boo
     }
 }
 
+export fn kv_strslice(Encoder mut * self, char *key, slice::Slice value) -> bool
+    where nullterm(key)
+    where slice::slice::integrity(&value)
+    where integrity(self)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->key(key, 0x80) &&
+                self->sl.push((u8)value.size) &&
+                self->sl.append_slice(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+
 export fn kv_cstr(Encoder mut * self, char *key, char * value) -> bool
     where nullterm(key)
     where nullterm(value)
@@ -246,6 +260,21 @@ export fn kv_cstr(Encoder mut * self, char *key, char * value) -> bool
         return  self->key(key, 0x80) &&
                 self->sl.push((u8)vl) &&
                 self->sl.append_cstr(value);
+    } else {
+        //TODO
+        return false;
+    }
+}
+
+export fn v_strslice(Encoder mut * self, slice::Slice value) -> bool
+    where slice::slice::integrity(&value)
+    where integrity(self)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->sl.push(0x8c) &&
+                self->sl.push((u8)value.size) &&
+                self->sl.append_slice(value);
     } else {
         //TODO
         return false;
@@ -355,7 +384,6 @@ fn key(Encoder mut * self, char *keystr, u8 valbits) -> bool
     where integrity(self)
     model integrity(self)
 {
-    log::info("encoding key %s", keystr);
     usize mut idx = 0;
     if self->index != 0 {
         static_attest(safe(self->index));
@@ -366,7 +394,6 @@ fn key(Encoder mut * self, char *keystr, u8 valbits) -> bool
         idx = gindex(self->index, k);
     }
     if idx != 0 {
-        log::info(" as %d", idx);
         if idx <= 0x1a {
             return self->sl.push((u8)idx | valbits);
         } else if idx <= 0xff {
@@ -425,9 +452,11 @@ export fn decode(Decoder mut new * self, slice::slice::Slice sl, Index mut * ind
 }
 
 export fn next_kv(Decoder mut new * self) -> bool
+    model slice::slice::integrity(&self->key)
 {
     static_attest(slice::slice::integrity(&self->sl));
     static_attest(safe(self->index));
+    static_attest(slice::slice::integrity(&self->key));
 
     if self->at >= self->sl.size {
         return false;
@@ -531,7 +560,7 @@ export fn next_kv(Decoder mut new * self) -> bool
             self->item = Item::Uint;
 
             if self->at + 2 > self->sl.size  || self->at  >= self->sl.size {
-                log::info("short read", vt);
+                log::warn("short read", vt);
                 return false;
             }
 
@@ -818,6 +847,31 @@ export fn next_v(Decoder mut new * self) -> bool
         }
     }
     return true;
+}
+
+/// skip over current field and all children
+export fn skip(Decoder mut new * self)
+{
+    switch self->item {
+        Item::Map => {
+            while self->next_kv() {
+                if self->item == Item::End {
+                    return;
+                }
+                self->skip()
+            }
+        }
+        Item::Array => {
+            while self->next_v() {
+                if self->item == Item::End {
+                    return;
+                }
+                self->skip()
+            }
+        }
+        default => {
+        }
+    }
 }
 
 
