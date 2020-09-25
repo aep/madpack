@@ -16,10 +16,12 @@ export fn main(int argc, char ** argv) -> int
 {
     new+1000 e = err::make();
 
-    new+1000 idx = madpack::empty_index();
+    new+1000000 bi = buffer::make();
+    new+100000 idx = madpack::empty_index();
 
     bool mut mode_unpack = false;
     bool mut mode_index_make = false;
+
 
     for (usize mut i = 1; i < (usize)argc; i++) {
         if unsafe<bool>(buffer::cstr_eq(argv[i], "--unpack")) {
@@ -32,20 +34,10 @@ export fn main(int argc, char ** argv) -> int
             if fd == 0 {
                 err::panic("cannot open %s", argv[i]);
             }
-
-            new+20000 b = buffer::make();
-            for(;;) {
-                char mut buf[1000];
-                usize bin = as<usize>(fread(buf, sizeof(char), static(len(buf)), fd));
-                if bin == 0 {
-                    break;
-                }
-                static_attest(bin < len(buf));
-                b.append_bytes((u8*)buf, bin);
-            }
-
+            while bi.fread(fd) {};
             fclose(fd);
-            madpack::from_preshared_index(&idx, b.as_slice());
+            madpack::from_preshared_index(&idx, bi.as_slice());
+            bi.clear();
 
         } else if unsafe<bool>(buffer::cstr_eq(argv[i], "--make-index")) {
             mode_index_make = true;
@@ -61,54 +53,33 @@ export fn main(int argc, char ** argv) -> int
     }
 
 
+    while bi.fread(stdin) {};
+
+
+
     if mode_unpack {
-        new+20000 b = buffer::make();
-        for(;;) {
-            char mut buf[1000];
-            usize bin = as<usize>(fread(buf, sizeof(char), static(len(buf)), stdin));
-            if bin == 0 {
-                break;
-            }
-            static_attest(bin < len(buf));
-            b.append_bytes((u8*)buf, bin);
-        }
-
-        printf("{");
-        new dc = madpack::decode(b.as_slice(), &idx);
-        json_decode(&dc, true, 1);
-        printf("\n}\n");
-
+        new dc = madpack::decode(bi.as_slice(), &idx);
+        madpack2json(&dc, false, 0);
+        printf("\n");
     } else {
 
-        new+20000 b = buffer::make();
-        new enc = madpack::encode(b.as_mut_slice(), &idx);
+        new+200000 bo = buffer::make();
+        new enc = madpack::encode(bo.as_mut_slice(), &idx);
 
-        new+1000 parser = json::parser(&e, json::U{
-            it:     json_encode,
-            user1:  &enc,
-            user2:  1,
-        });
+
+        new+160000 dec = json::decode_value(&e, bi.mem, bi.at);
+        e.abort();
+        json2madpack(&dec, &enc, &e);
         e.abort();
 
-        char mut buf[1000];
-        for(;;) {
-            usize bin = as<usize>(fread(buf, sizeof(char), static(len(buf)), stdin));
-            if bin == 0 {
-                break;
-            }
-            static_attest(bin < len(buf));
-            json::push(&parser, &e, buf, bin);
-            if err::check(&e) {
-                err::eprintf(&e, stderr);
-                return 2;
-            }
-        }
-        e.abort();
         if mode_index_make {
-            let sl = idx.to_preshared_index();
-            fwrite(sl.mem, 1, sl.size, stdout);
+            bo.clear();
+            idx.to_preshared_index(bo.as_mut_slice(), &e);
+            e.abort();
+            fwrite(bo.mem, 1, bo.at, stdout);
         } else {
-            fwrite(b.mem, 1, b.at, stdout);
+            log::info("encoded %d bytes of json into %d bytes of madpack", bi.at, bo.at);
+            fwrite(bo.mem, 1, bo.at, stdout);
         }
     }
 
@@ -117,7 +88,7 @@ export fn main(int argc, char ** argv) -> int
 }
 
 
-fn json_decode(madpack::Decoder mut * dc, bool ismap, usize indent)
+fn madpack2json(madpack::Decoder mut * dc, bool ismap, usize indent)
 {
     bool mut first = true;
     for (;;) {
@@ -175,7 +146,7 @@ fn json_decode(madpack::Decoder mut * dc, bool ismap, usize indent)
             }
             madpack::Item::Map       => {
                 printf("{");
-                json_decode(dc, true, indent + 1 );
+                madpack2json(dc, true, indent + 1 );
                 printf("\n");
                 for (usize mut i = 0; i < indent; i++) {
                     printf("  ");
@@ -184,7 +155,7 @@ fn json_decode(madpack::Decoder mut * dc, bool ismap, usize indent)
             }
             madpack::Item::Array     => {
                 printf("[");
-                json_decode(dc, false, indent + 1 );
+                madpack2json(dc, false, indent + 1 );
                 printf("\n");
                 for (usize mut i = 0; i < indent; i++) {
                     printf("  ");
@@ -195,120 +166,67 @@ fn json_decode(madpack::Decoder mut * dc, bool ismap, usize indent)
     }
 }
 
-
-fn json_encode_end(json::U *u, err::Err+et mut * e, json::Parser+pt mut* p)
+fn json2madpack(json::Decoder mut *dec, madpack::Encoder mut * enc,  err::Err mut *e)
     where err::checked(*e)
+    where madpack::integrity(enc)
 {
-    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
-    err::assert_safe(enc);
-    static_attest(madpack::integrity(enc));
-
-    enc->end();
-}
-
-fn json_encode(json::U *u, err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    madpack::Encoder mut*enc = (madpack::Encoder mut *)u->user1;
-    err::assert_safe(enc);
-    static_attest(madpack::integrity(enc));
-
-    switch v.t {
-        json::ValueType::Object => {
-
-            if u->user2 == 1 {
-                if !enc->kv_map(k) {
-                    e->fail(err::OutOfTail, "oom");
+    while dec->next(e) {
+        switch dec->item {
+            json::Item::Array => {
+                if dec->key.mem != 0 {
+                    enc->kv_array(dec->key);
+                } else {
+                    enc->v_array();
                 }
-            } else {
-                if !enc->v_map() {
-                    e->fail(err::OutOfTail, "oom");
+                json2madpack(dec, enc, e);
+            }
+            json::Item::Map => {
+                if dec->key.mem != 0 {
+                    enc->kv_map(dec->key);
+                } else {
+                    enc->v_map();
+                }
+                json2madpack(dec, enc, e);
+            }
+            json::Item::DirtyString => {
+            }
+            json::Item::String => {
+                if dec->key.mem != 0 {
+                    enc->kv_strslice(dec->key, dec->val);
+                } else {
+                    enc->v_strslice(dec->val);
                 }
             }
-
-            json::next(p,  e, json::U{
-                it:     json_encode,
-                user1:  enc,
-                user2:  1,
-                pop:    json_encode_end,
-            });
-            if err::check(e) {
-                return;
-            }
-
-        }
-        json::ValueType::Array => {
-
-            if u->user2 == 1 {
-                if !enc->kv_array(k) {
-                    e->fail(err::OutOfTail, "oom");
-                }
-            } else {
-                if !enc->v_array() {
-                    e->fail(err::OutOfTail, "oom");
+            json::Item::Uint => {
+                let v = dec->val.atoi(10);
+                if dec->key.mem != 0 {
+                    enc->kv_uint(dec->key, v);
+                } else {
+                    enc->v_uint(v);
                 }
             }
-
-            json::next(p,  e, json::U{
-                it:     json_encode,
-                user1:  enc,
-                user2:  0,
-                pop:    json_encode_end,
-            });
-            if err::check(e) {
-                return;
-            }
-
-
-        }
-        json::ValueType::String => {
-            static_attest(safe(v.string));
-            static_attest(nullterm(v.string));
-
-            if u->user2 == 1 {
-                if !enc->kv_cstr(k, v.string) {
-                    e->fail(err::OutOfTail, "oom");
-                }
-            } else {
-                if !enc->v_cstr(v.string) {
-                    e->fail(err::OutOfTail, "oom");
+            json::Item::False => {
+                if dec->key.mem != 0 {
+                    enc->kv_bool(dec->key, false);
+                } else {
+                    enc->v_bool(false);
                 }
             }
-        }
-        json::ValueType::Integer => {
-            //TODO uuuh this can be negative
-            if u->user2 == 1 {
-                if !enc->kv_uint(k, v.integer) {
-                    e->fail(err::OutOfTail, "oom");
-                }
-            } else {
-                if !enc->v_uint(v.integer) {
-                    e->fail(err::OutOfTail, "oom");
+            json::Item::True => {
+                if dec->key.mem != 0 {
+                    enc->kv_bool(dec->key, true);
+                } else {
+                    enc->v_bool(true);
                 }
             }
-        }
-        json::ValueType::Boolean => {
-            if u->user2 == 1 {
-                if !enc->kv_bool(k, v.integer) {
-                    e->fail(err::OutOfTail, "oom");
-                }
-            } else {
-                if !enc->v_bool(v.integer) {
-                    e->fail(err::OutOfTail, "oom");
-                }
-            }
-        }
-        json::ValueType::Null => {
-            if u->user2 == 1 {
-                if !enc->kv_null(k) {
-                    e->fail(err::OutOfTail, "oom");
-                }
-            } else {
-                if !enc->v_null() {
-                    e->fail(err::OutOfTail, "oom");
+            json::Item::Null => {
+                if dec->key.mem != 0 {
+                    enc->kv_null(dec->key);
+                } else {
+                    enc->v_null();
                 }
             }
         }
     }
+    enc->end();
 }

@@ -5,145 +5,24 @@ using log;
 using madpack;
 using slice;
 using <stdio.h>::{stdin, printf, stderr, fprintf};
-
-
-
-fn parse_string(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    if v.t == json::ValueType::Integer{
-        static_attest(buffer::integrity(&stringbuf, static(len(stringbuf.mem))));
-        stringbuf.push((u8)v.integer);
-    }
-}
-
-fn end_string(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p)
-    where err::checked(*e)
-{
-    let enc = (madpack::Encoder mut *)u->user1;
-    static_attest(safe(enc));
-    static_attest(madpack::integrity(enc));
-
-    static_attest(buffer::integrity(&stringbuf, static(len(stringbuf.mem))));
-    enc->v_cstr(stringbuf.cstr());
-}
-
-
-static buffer::Buffer+1000 mut stringbuf = {0};
-
-fn parse_v(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    if buffer::cstr_eq(k, "v") {
-        switch v.t {
-            json::ValueType::Array => {
-                stringbuf.clear();
-                json::next(p,  e, json::U{
-                    it:     parse_string,
-                    user1:  u->user1,
-                    pop:    end_string,
-                });
-                if err::check(e) { return; }
-
-            }
-            default => {
-            }
-        }
-    }
-}
-
-
-fn parse_value(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    let enc = (madpack::Encoder mut *)u->user1;
-    static_attest(safe(enc));
-    static_attest(madpack::integrity(enc));
-
-    if v.t == json::ValueType::Object && buffer::cstr_eq(k, "LiteralString") {
-        json::next(p,  e, json::U{it:parse_v, user1: u->user1});
-        if err::check(e) { return; }
-    } else if v.t == json::ValueType::Object && buffer::cstr_eq(k, "Literal") {
-        enc->v_null();
-    }
-}
-
-fn parse_array_field(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    if v.t == json::ValueType::Object {
-        json::next(p,  e, json::U{it:parse_value, user1: u->user1});
-        if err::check(e) { return; }
-    }
-}
-
-fn parse_array_init(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    if v.t == json::ValueType::Array && buffer::cstr_eq(k, "fields") {
-        json::next(p,  e, json::U{it:parse_array_field, user1: u->user1} );
-        if err::check(e) { return; }
-    }
-}
-
-fn parse_arg(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    if v.t == json::ValueType::Object && buffer::cstr_eq(k, "ArrayInit") {
-        json::next(p,  e, json::U{it:parse_array_init, user1: u->user1} );
-        if err::check(e) { return; }
-    }
-}
-
-fn parse_arglist(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    if v.t == json::ValueType::Object {
-        json::next(p,  e, json::U { it: parse_arg, user1: u->user1 });
-        if err::check(e) { return; }
-    }
-}
-
-fn parse_doc(json::U *u,  err::Err+et mut *e, json::Parser+pt mut* p, char *k, json::Value v)
-    where err::checked(*e)
-    where nullterm(k)
-{
-    if v.t == json::ValueType::Array {
-        if buffer::cstr_eq(k, "args") {
-            json::next(p,  e, json::U{ it: parse_arglist, user1: u->user1} );
-            if err::check(e) { return; }
-        }
-    }
-}
+using ast;
 
 pub fn preshare() {
-    new+1000 e = err::make();
-    new+10   idx = madpack::empty_index();
-    new+1000 b = buffer::make();
-    new enc = madpack::encode(b.as_mut_slice(), &idx);
+    new+1000    e = err::make();
+    new+100000  a = ast::from_macro();
+    new+100000  b = buffer::make();
 
+    new enc = madpack::encode(b.as_mut_slice(), 0);
 
+    for let mut i = a.args.iter(); i.next(); {
+        let arg = (ast::Expression *)i.val.mem;
+        err::assert_safe(arg);
 
-    new+1000 parser = json::parser(&e, json::U{ it: parse_doc, user1: &enc} );
-    e.abort();
-
-    new+10000 s = buffer::make();
-    for (; s.fgets(stdin) ; s.clear()) {
-        //fprintf(stderr, "%s", s.mem);
-        json::push(&parser, &e, s.mem, s.at);
-        e.abort();
+        if arg->t == ast::ExpressionType::LiteralString {
+            static_attest(slice::slice::integrity(&arg->v.literal));
+            enc.v_strslice(arg->v.literal);
+        }
     }
-
-
-
-    static_attest(slice::mut_slice::integrity(&idx.memsl));
 
     printf("slice::slice::Slice{ mem: (u8*)\"");
     for (usize mut i = 0; i < b.at; i++) {

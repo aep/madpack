@@ -128,11 +128,11 @@ if you ever loose the index, you can still read the message and guess the key na
     0111 1000 0x78  null
     0111 1001 0x79  true
     0111 1010 0x7a  false
-    0111 1011 0x7b  f32
+    0111 1011 0x7b  map
 
-    0111 1100 0x7c  f64
-    0111 1101 0x7d  map
-    0111 1110 0x7e  array
+    0111 1100 0x7c  array
+    0111 1101 0x7d  f32
+    0111 1110 0x7e  f64
     0111 1111 0x7f  ext
 
     dynamic size:
