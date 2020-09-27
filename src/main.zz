@@ -59,7 +59,7 @@ export fn main(int argc, char ** argv) -> int
 
     if mode_unpack {
         new dc = madpack::decode(bi.as_slice(), &idx);
-        madpack2json(&dc, false, 0);
+        madpack::to_json(&dc, stdout, false, 0);
         printf("\n");
     } else {
 
@@ -69,7 +69,7 @@ export fn main(int argc, char ** argv) -> int
 
         new+160000 dec = json::decode_value(&e, bi.mem, bi.at);
         e.abort();
-        json2madpack(&dec, &enc, &e);
+        madpack::from_json(&dec, &enc, &e);
         e.abort();
 
         if mode_index_make {
@@ -88,145 +88,3 @@ export fn main(int argc, char ** argv) -> int
 }
 
 
-fn madpack2json(madpack::Decoder mut * dc, bool ismap, usize indent)
-{
-    bool mut first = true;
-    for (;;) {
-        if ismap {
-            if !dc->next_kv() {
-                break;
-            }
-        } else {
-            if !dc->next_v() {
-                break;
-            }
-        }
-        if dc->item == madpack::Item::End {
-            break;
-        }
-        if first {
-            first = false;
-            printf("\n");
-        } else {
-            printf(",\n");
-        }
-        for (usize mut i = 0; i < indent; i++) {
-            printf("  ");
-        }
-        if ismap {
-            printf("\"%.*s\" : ", dc->key.size, dc->key.mem);
-        }
-        switch dc->item {
-            madpack::Item::Invalid   => {
-                printf("\"invalid\"");
-            }
-            madpack::Item::Null      => {
-                printf("null");
-            }
-            madpack::Item::True      => {
-                printf("true");
-            }
-            madpack::Item::False     => {
-                printf("false");
-            }
-            madpack::Item::Float     => {
-                printf("%f", dc->value.v_float);
-            }
-            madpack::Item::Uint      => {
-                printf("%llu", dc->value.v_uint);
-            }
-            madpack::Item::Sint      => {
-                printf("%d", dc->value.v_sint);
-            }
-            madpack::Item::String    => {
-                printf("\"%.*s\"", dc->value.v_slice.size, dc->value.v_slice.mem);
-            }
-            madpack::Item::Bytes     => {
-                printf("\"bytes\"");
-            }
-            madpack::Item::Map       => {
-                printf("{");
-                madpack2json(dc, true, indent + 1 );
-                printf("\n");
-                for (usize mut i = 0; i < indent; i++) {
-                    printf("  ");
-                }
-                printf("}");
-            }
-            madpack::Item::Array     => {
-                printf("[");
-                madpack2json(dc, false, indent + 1 );
-                printf("\n");
-                for (usize mut i = 0; i < indent; i++) {
-                    printf("  ");
-                }
-                printf("]");
-            }
-        }
-    }
-}
-
-fn json2madpack(json::Decoder mut *dec, madpack::Encoder mut * enc,  err::Err mut *e)
-    where err::checked(*e)
-    where madpack::integrity(enc)
-{
-    while dec->next(e) {
-        switch dec->item {
-            json::Item::Array => {
-                if dec->key.mem != 0 {
-                    enc->kv_array(dec->key);
-                } else {
-                    enc->v_array();
-                }
-                json2madpack(dec, enc, e);
-            }
-            json::Item::Map => {
-                if dec->key.mem != 0 {
-                    enc->kv_map(dec->key);
-                } else {
-                    enc->v_map();
-                }
-                json2madpack(dec, enc, e);
-            }
-            json::Item::DirtyString => {
-            }
-            json::Item::String => {
-                if dec->key.mem != 0 {
-                    enc->kv_strslice(dec->key, dec->val);
-                } else {
-                    enc->v_strslice(dec->val);
-                }
-            }
-            json::Item::Uint => {
-                let v = dec->val.atoi(10);
-                if dec->key.mem != 0 {
-                    enc->kv_uint(dec->key, v);
-                } else {
-                    enc->v_uint(v);
-                }
-            }
-            json::Item::False => {
-                if dec->key.mem != 0 {
-                    enc->kv_bool(dec->key, false);
-                } else {
-                    enc->v_bool(false);
-                }
-            }
-            json::Item::True => {
-                if dec->key.mem != 0 {
-                    enc->kv_bool(dec->key, true);
-                } else {
-                    enc->v_bool(true);
-                }
-            }
-            json::Item::Null => {
-                if dec->key.mem != 0 {
-                    enc->kv_null(dec->key);
-                } else {
-                    enc->v_null();
-                }
-            }
-        }
-    }
-    enc->end();
-}

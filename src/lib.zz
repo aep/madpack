@@ -855,3 +855,146 @@ export fn skip(Decoder mut new * self)
 }
 
 
+using <stdio.h>::{FILE, fprintf};
+export fn to_json(Decoder mut * dc, FILE mut* unsafe fd, bool ismap, usize indent)
+{
+    bool mut first = true;
+    for (;;) {
+        if ismap {
+            if !dc->next_kv() {
+                break;
+            }
+        } else {
+            if !dc->next_v() {
+                break;
+            }
+        }
+        if dc->item == Item::End {
+            break;
+        }
+        if first {
+            first = false;
+            fprintf(fd,"\n");
+        } else {
+            fprintf(fd,",\n");
+        }
+        for (usize mut i = 0; i < indent; i++) {
+            fprintf(fd,"  ");
+        }
+        if ismap {
+            fprintf(fd,"\"%.*s\" : ", dc->key.size, dc->key.mem);
+        }
+        switch dc->item {
+            Item::Invalid   => {
+                fprintf(fd,"\"invalid\"");
+            }
+            Item::Null      => {
+                fprintf(fd,"null");
+            }
+            Item::True      => {
+                fprintf(fd,"true");
+            }
+            Item::False     => {
+                fprintf(fd,"false");
+            }
+            Item::Float     => {
+                fprintf(fd,"%f", dc->value.v_float);
+            }
+            Item::Uint      => {
+                fprintf(fd,"%llu", dc->value.v_uint);
+            }
+            Item::Sint      => {
+                fprintf(fd,"%d", dc->value.v_sint);
+            }
+            Item::String    => {
+                fprintf(fd,"\"%.*s\"", dc->value.v_slice.size, dc->value.v_slice.mem);
+            }
+            Item::Bytes     => {
+                fprintf(fd,"\"bytes\"");
+            }
+            Item::Map       => {
+                fprintf(fd,"{");
+                to_json(dc, fd, true, indent + 1);
+                fprintf(fd,"\n");
+                for (usize mut i = 0; i < indent; i++) {
+                    fprintf(fd,"  ");
+                }
+                fprintf(fd,"}");
+            }
+            Item::Array     => {
+                fprintf(fd,"[");
+                to_json(dc, fd, false, indent + 1 );
+                fprintf(fd,"\n");
+                for (usize mut i = 0; i < indent; i++) {
+                    fprintf(fd,"  ");
+                }
+                fprintf(fd,"]");
+            }
+        }
+    }
+}
+
+export fn from_json(json::Decoder mut *dec, Encoder mut * enc,  err::Err mut *e)
+    where err::checked(*e)
+    where integrity(enc)
+{
+    while dec->next(e) {
+        switch dec->item {
+            json::Item::Array => {
+                if dec->key.mem != 0 {
+                    enc->kv_array(dec->key);
+                } else {
+                    enc->v_array();
+                }
+                from_json(dec, enc, e);
+            }
+            json::Item::Map => {
+                if dec->key.mem != 0 {
+                    enc->kv_map(dec->key);
+                } else {
+                    enc->v_map();
+                }
+                from_json(dec, enc, e);
+            }
+            json::Item::DirtyString => {
+            }
+            json::Item::String => {
+                if dec->key.mem != 0 {
+                    enc->kv_strslice(dec->key, dec->val);
+                } else {
+                    enc->v_strslice(dec->val);
+                }
+            }
+            json::Item::Uint => {
+                let v = dec->val.atoi(10);
+                if dec->key.mem != 0 {
+                    enc->kv_uint(dec->key, v);
+                } else {
+                    enc->v_uint(v);
+                }
+            }
+            json::Item::False => {
+                if dec->key.mem != 0 {
+                    enc->kv_bool(dec->key, false);
+                } else {
+                    enc->v_bool(false);
+                }
+            }
+            json::Item::True => {
+                if dec->key.mem != 0 {
+                    enc->kv_bool(dec->key, true);
+                } else {
+                    enc->v_bool(true);
+                }
+            }
+            json::Item::Null => {
+                if dec->key.mem != 0 {
+                    enc->kv_null(dec->key);
+                } else {
+                    enc->v_null();
+                }
+            }
+        }
+    }
+    enc->end();
+}
