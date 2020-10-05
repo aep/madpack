@@ -11,6 +11,9 @@ using vec;
 using pool;
 using madpack::macrohelper;
 
+
+export symbol DecodingError;
+
 export enum Item {
     Invalid,
     Uint,
@@ -38,15 +41,16 @@ export fn empty_index(Index mut new *self, usize tail = static(len(self->items.p
     self->items.make(tail);
 }
 
-export fn from_preshared_index(Index mut new *self, slice::slice::Slice v, usize tail = static(len(self->items.pool.pmem)))
+export fn from_preshared_index(Index mut new *self, err::Err mut *e, slice::slice::Slice v, usize tail = static(len(self->items.pool.pmem)))
     where tail > 0
     where slice::slice::integrity(&v)
+    where err::checked(*e)
 {
     empty_index(self, tail);
     static_attest(vec::integrity(&self->items));
 
     new dc = decode(v, 0);
-    while dc.next_v() {
+    while dc.next_v(e) {
         switch dc.item {
             Item::String => {
                 static_attest(slice::slice::integrity(&dc.value.v_slice));
@@ -98,6 +102,12 @@ pub fn gindex(Index mut*self, slice::slice::Slice key) -> usize
 fn lookup(Index mut*self, u16 mut i) -> slice::slice::Slice
     model slice::slice::integrity(&return)
 {
+    if self == 0 {
+        return slice::slice::Slice{
+            mem: (u8*)"missing",
+            size: 7,
+        };
+    }
     static_attest(vec::integrity(&self->items));
 
     i -=1;
@@ -431,8 +441,9 @@ export fn decode(Decoder mut new * self, slice::slice::Slice sl, Index mut * uns
     self->index = index;
 }
 
-export fn next_kv(Decoder mut new * self) -> bool
+export fn next_kv(Decoder mut new * self, err::Err mut *e) -> bool
     model slice::slice::integrity(&self->key)
+    where err::checked(*e)
 {
     static_attest(slice::slice::integrity(&self->sl));
     static_attest(safe(self->index));
@@ -490,7 +501,9 @@ export fn next_kv(Decoder mut new * self) -> bool
             };
             self->at += (usize)idxt;
             static_attest(slice::slice::integrity(&self->key));
-            self->index->gindex(self->key);
+            if self->index != 0 {
+                self->index->gindex(self->key);
+            }
 
         }
         0x1e => {
@@ -512,7 +525,9 @@ export fn next_kv(Decoder mut new * self) -> bool
             };
             static_attest(slice::slice::integrity(&self->key));
             self->at += (usize)idxt;
-            self->index->gindex(self->key);
+            if self->index != 0 {
+                self->index->gindex(self->key);
+            }
         }
         0x1f => {
             self->item = Item::End;
@@ -540,7 +555,7 @@ export fn next_kv(Decoder mut new * self) -> bool
             self->item = Item::Uint;
 
             if self->at + 2 > self->sl.size  || self->at  >= self->sl.size {
-                log::warn("short read", vt);
+                e->fail(DecodingError, "short read %d", vt);
                 return false;
             }
 
@@ -603,14 +618,15 @@ export fn next_kv(Decoder mut new * self) -> bool
             self->item = Item::Array;
         }
         0xe0 => {
-            return self->next_v();
+            return self->next_v(e);
         }
     }
     return true;
 }
 
 
-export fn next_v(Decoder mut new * self) -> bool
+export fn next_v(Decoder mut new * self, err::Err mut *e) -> bool
+    where err::checked(*e)
 {
     static_attest(slice::slice::integrity(&self->sl));
     static_attest(safe(self->index));
@@ -722,17 +738,24 @@ export fn next_v(Decoder mut new * self) -> bool
             }
             slice::slice::empty(&self->value.v_slice);
 
-            if self->at >= self->sl.size || self->at + 1 >= self->sl.size{
-                log::warn("8bit len short read");
+            if self->at >= self->sl.size || self->at + 1 > self->sl.size{
+                e->fail(DecodingError,"8bit len short read");
                 return false;
             }
 
             let size  = (usize)self->sl.mem[self->at];
             self->at += 1;
-            self->value.v_slice = slice::slice::Slice {
-                mem:    self->sl.mem + self->at,
-                size:   size,
-            };
+            if size == 0 {
+                self->value.v_slice = slice::slice::Slice {
+                    mem: 0,
+                    size: 0,
+                };
+            } else {
+                self->value.v_slice = slice::slice::Slice {
+                    mem:    unsafe<u8*>(self->sl.mem + self->at),
+                    size:   size,
+                };
+            }
             self->at += size;
         }
         0x8d, 0x9d => {
@@ -743,8 +766,8 @@ export fn next_v(Decoder mut new * self) -> bool
             }
             slice::slice::empty(&self->value.v_slice);
 
-            if self->at >= self->sl.size || self->at + 2 >= self->sl.size{
-                log::warn("16bit len short read");
+            if self->at >= self->sl.size || self->at + 2 >  self->sl.size{
+                e->fail(DecodingError,"16bit len short read");
                 return false;
             }
 
@@ -761,18 +784,16 @@ export fn next_v(Decoder mut new * self) -> bool
             };
             self->at += size;
         }
-        0x8e, 0x9e, 0xae, 0xbe  => {
+        0x8e, 0x9e => {
             static_attest(self->at < self->sl.size);
             switch eb{
                 0x8e => { self->item = Item::String; }
                 0x9e => { self->item = Item::Bytes;  }
-                0xae => { self->item = Item::Map;  }
-                0xbe => { self->item = Item::Array;  }
             }
             slice::slice::empty(&self->value.v_slice);
 
-            if self->at >= self->sl.size || self->at + 4 >= self->sl.size{
-                log::warn("32bit len short read");
+            if self->at >= self->sl.size || self->at + 4 >  self->sl.size{
+                e->fail(DecodingError,"32bit len short read");
                 return false;
             }
 
@@ -789,18 +810,16 @@ export fn next_v(Decoder mut new * self) -> bool
             };
             self->at += size;
         }
-        0x8f, 0x9f, 0xaf, 0xbf  => {
+        0x8f, 0x9f  => {
             static_attest(self->at < self->sl.size);
             switch eb{
                 0x8f => { self->item = Item::String; }
                 0x9f => { self->item = Item::Bytes;  }
-                0xaf => { self->item = Item::Map;  }
-                0xbf => { self->item = Item::Array;  }
             }
             slice::slice::empty(&self->value.v_slice);
 
-            if self->at >= self->sl.size || self->at + 8 >= self->sl.size{
-                log::warn("64bit len short read");
+            if self->at >= self->sl.size || self->at + 8 >  self->sl.size{
+                e->fail(DecodingError,"64bit len short read");
                 return false;
             }
 
@@ -822,31 +841,52 @@ export fn next_v(Decoder mut new * self) -> bool
                 self->item = Item::Uint;
                 self->value.v_uint = (u64)eb
             } else {
-                return false;
+                let size  = (usize)(eb & 0x0f);
+                if self->at >= self->sl.size || self->at + size > self->sl.size{
+                    e->fail(DecodingError,"sized short read");
+                    return false;
+                }
+                self->value.v_slice = slice::slice::Slice {
+                    mem:    self->sl.mem + self->at,
+                    size:   size,
+                };
+                self->at += size;
+                switch eb & 0xf0 {
+                    0x80 => { self->item = Item::String; }
+                    0x90 => { self->item = Item::Bytes;  }
+                    default => {return false; }
+                }
             }
         }
+    }
+    if self->at > self->sl.size {
+        e->fail(DecodingError,"value short read");
+        return false;
     }
     return true;
 }
 
 /// skip over current field and all children
-export fn skip(Decoder mut new * self)
+export fn skip(Decoder mut new * self, err::Err mut *e )
+    where err::checked(*e)
 {
     switch self->item {
         Item::Map => {
-            while self->next_kv() {
+            while self->next_kv(e) {
+                static_attest(err::checked(*e));
                 if self->item == Item::End {
                     return;
                 }
-                self->skip()
+                self->skip(e)
             }
         }
         Item::Array => {
-            while self->next_v() {
+            while self->next_v(e) {
+                static_attest(err::checked(*e));
                 if self->item == Item::End {
                     return;
                 }
-                self->skip()
+                self->skip(e)
             }
         }
         default => {
@@ -856,19 +896,21 @@ export fn skip(Decoder mut new * self)
 
 
 using <stdio.h>::{FILE, fprintf};
-export fn to_json(Decoder mut * dc, FILE mut* unsafe fd, bool ismap, usize indent)
+export fn to_json(Decoder mut * dc, err::Err mut *e, FILE mut* unsafe fd, bool ismap, usize indent)
+    where err::checked(*e)
 {
     bool mut first = true;
     for (;;) {
         if ismap {
-            if !dc->next_kv() {
+            if !dc->next_kv(e) {
                 break;
             }
         } else {
-            if !dc->next_v() {
+            if !dc->next_v(e) {
                 break;
             }
         }
+        static_attest(err::checked(*e));
         if dc->item == Item::End {
             break;
         }
@@ -914,7 +956,7 @@ export fn to_json(Decoder mut * dc, FILE mut* unsafe fd, bool ismap, usize inden
             }
             Item::Map       => {
                 fprintf(fd,"{");
-                to_json(dc, fd, true, indent + 1);
+                to_json(dc, e, fd, true, indent + 1);
                 fprintf(fd,"\n");
                 for (usize mut i = 0; i < indent; i++) {
                     fprintf(fd,"  ");
@@ -923,7 +965,7 @@ export fn to_json(Decoder mut * dc, FILE mut* unsafe fd, bool ismap, usize inden
             }
             Item::Array     => {
                 fprintf(fd,"[");
-                to_json(dc, fd, false, indent + 1 );
+                to_json(dc, e, fd, false, indent + 1 );
                 fprintf(fd,"\n");
                 for (usize mut i = 0; i < indent; i++) {
                     fprintf(fd,"  ");

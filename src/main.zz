@@ -36,7 +36,8 @@ export fn main(int argc, char ** argv) -> int
             }
             while bi.fread(fd) {};
             fclose(fd);
-            madpack::from_preshared_index(&idx, bi.as_slice());
+            madpack::from_preshared_index(&idx, &e, bi.as_slice());
+            e.abort();
             bi.clear();
 
         } else if unsafe<bool>(buffer::cstr_eq(argv[i], "--make-index")) {
@@ -59,7 +60,7 @@ export fn main(int argc, char ** argv) -> int
 
     if mode_unpack {
         new dc = madpack::decode(bi.as_slice(), &idx);
-        madpack::to_json(&dc, stdout, false, 0);
+        madpack::to_json(&dc, &e, stdout, false, 0);
         printf("\n");
     } else {
 
