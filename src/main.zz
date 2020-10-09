@@ -60,7 +60,7 @@ export fn main(int argc, char ** argv) -> int
 
     if mode_unpack {
         new dc = madpack::decode(bi.as_slice(), &idx);
-        madpack::to_json(&dc, &e, stdout, false, 0);
+        madpack::to_json(&dc, &e, stdout, false, 0, true);
         printf("\n");
     } else {
 

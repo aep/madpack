@@ -381,6 +381,7 @@ fn key(Encoder mut * self, slice::Slice k, u8 valbits) -> bool
         static_attest(safe(self->index));
         idx = gindex(self->index, k);
     }
+
     if idx != 0 {
         if idx <= 0x1a {
             return self->sl.push((u8)idx | valbits);
@@ -896,7 +897,7 @@ export fn skip(Decoder mut new * self, err::Err mut *e )
 
 
 using <stdio.h>::{FILE, fprintf};
-export fn to_json(Decoder mut * dc, err::Err mut *e, FILE mut* unsafe fd, bool ismap, usize indent)
+export fn to_json(Decoder mut * dc, err::Err mut *e, FILE mut* unsafe fd, bool ismap, usize indent, bool pretty)
     where err::checked(*e)
 {
     bool mut first = true;
@@ -916,15 +917,25 @@ export fn to_json(Decoder mut * dc, err::Err mut *e, FILE mut* unsafe fd, bool i
         }
         if first {
             first = false;
-            fprintf(fd,"\n");
+            if pretty {
+                fprintf(fd,"\n");
+            }
         } else {
-            fprintf(fd,",\n");
+            if pretty {
+                fprintf(fd,",\n");
+            } else {
+                fprintf(fd,",");
+            }
         }
-        for (usize mut i = 0; i < indent; i++) {
-            fprintf(fd,"  ");
+
+        if pretty {
+            for (usize mut i = 0; i < indent; i++) {
+                fprintf(fd,"  ");
+            }
         }
+
         if ismap {
-            fprintf(fd,"\"%.*s\" : ", dc->key.size, dc->key.mem);
+            fprintf(fd,"\"%.*s\":", dc->key.size, dc->key.mem);
         }
         switch dc->item {
             Item::Invalid   => {
@@ -956,19 +967,27 @@ export fn to_json(Decoder mut * dc, err::Err mut *e, FILE mut* unsafe fd, bool i
             }
             Item::Map       => {
                 fprintf(fd,"{");
-                to_json(dc, e, fd, true, indent + 1);
-                fprintf(fd,"\n");
-                for (usize mut i = 0; i < indent; i++) {
-                    fprintf(fd,"  ");
+                to_json(dc, e, fd, true, indent + 1, pretty);
+                if pretty {
+                    fprintf(fd,"\n");
+                }
+                if pretty {
+                    for (usize mut i = 0; i < indent; i++) {
+                        fprintf(fd,"  ");
+                    }
                 }
                 fprintf(fd,"}");
             }
             Item::Array     => {
                 fprintf(fd,"[");
-                to_json(dc, e, fd, false, indent + 1 );
-                fprintf(fd,"\n");
-                for (usize mut i = 0; i < indent; i++) {
-                    fprintf(fd,"  ");
+                to_json(dc, e, fd, false, indent + 1, pretty );
+                if pretty {
+                    fprintf(fd,"\n");
+                }
+                if pretty {
+                    for (usize mut i = 0; i < indent; i++) {
+                        fprintf(fd,"  ");
+                    }
                 }
                 fprintf(fd,"]");
             }
