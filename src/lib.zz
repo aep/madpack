@@ -11,7 +11,6 @@ using vec;
 using pool;
 using madpack::macrohelper;
 
-
 export symbol DecodingError;
 
 export enum Item {
@@ -219,8 +218,8 @@ export fn kv_byteslice(Encoder mut * self, slice::Slice k, slice::Slice value) -
                 self->sl.push((u8)value.size) &&
                 self->sl.append_slice(value);
     } else {
-        //TODO
-        return false;
+        return  self->key(k, 0xe0) &&
+                self->v_byteslice(value);
     }
 }
 
@@ -235,8 +234,8 @@ export fn kv_strslice(Encoder mut * self, slice::Slice k, slice::Slice value) ->
                 self->sl.push((u8)value.size) &&
                 self->sl.append_slice(value);
     } else {
-        //TODO
-        return false;
+        return  self->key(k, 0xe0) &&
+                self->v_strslice(value);
     }
 }
 
@@ -253,8 +252,8 @@ export fn kv_cstr(Encoder mut * self, slice::Slice k, char * value) -> bool
                 self->sl.push((u8)vl) &&
                 self->sl.append_cstr(value);
     } else {
-        //TODO
-        return false;
+        return  self->key(k, 0xe0) &&
+                self->v_cstr(value);
     }
 }
 
@@ -267,9 +266,42 @@ export fn v_strslice(Encoder mut * self, slice::Slice value) -> bool
         return  self->sl.push(0x8c) &&
                 self->sl.push((u8)value.size) &&
                 self->sl.append_slice(value);
+    } else if value.size <= 0xffff {
+        return  self->sl.push(0x8d) &&
+                self->sl.push16(byteorder::to_le16((u16)value.size)) &&
+                self->sl.append_slice(value);
+    } else if value.size <= 0xffffffff {
+        return  self->sl.push(0x8e) &&
+                self->sl.push32(byteorder::to_le32((u32)value.size)) &&
+                self->sl.append_slice(value);
     } else {
-        //TODO
-        return false;
+        return  self->sl.push(0x8f) &&
+                self->sl.push64(byteorder::to_le64((u64)value.size)) &&
+                self->sl.append_slice(value);
+    }
+}
+
+export fn v_byteslice(Encoder mut * self, slice::Slice value) -> bool
+    where slice::slice::integrity(&value)
+    where integrity(self)
+    model integrity(self)
+{
+    if value.size <= 0xff {
+        return  self->sl.push(0x9c) &&
+                self->sl.push((u8)value.size) &&
+                self->sl.append_slice(value);
+    } else if value.size <= 0xffff {
+        return  self->sl.push(0x9d) &&
+                self->sl.push16(byteorder::to_le16((u16)value.size)) &&
+                self->sl.append_slice(value);
+    } else if value.size <= 0xffffffff {
+        return  self->sl.push(0x9e) &&
+                self->sl.push32(byteorder::to_le32((u32)value.size)) &&
+                self->sl.append_slice(value);
+    } else {
+        return  self->sl.push(0x9f) &&
+                self->sl.push64(byteorder::to_le64((u64)value.size)) &&
+                self->sl.append_slice(value);
     }
 }
 
@@ -283,9 +315,18 @@ export fn v_cstr(Encoder mut * self, char * value) -> bool
         return  self->sl.push(0x8c) &&
                 self->sl.push((u8)vl) &&
                 self->sl.append_cstr(value);
+    } else if vl <= 0xffff {
+        return  self->sl.push(0x8d) &&
+                self->sl.push16(byteorder::to_le16((u16)vl)) &&
+                self->sl.append_cstr(value);
+    } else if vl <= 0xffffffff {
+        return  self->sl.push(0x8e) &&
+                self->sl.push32(byteorder::to_le32((u32)vl)) &&
+                self->sl.append_cstr(value);
     } else {
-        //TODO
-        return false;
+        return  self->sl.push(0x8f) &&
+                self->sl.push64(byteorder::to_le64((u64)vl)) &&
+                self->sl.append_cstr(value);
     }
 }
 
@@ -963,7 +1004,11 @@ export fn to_json(Decoder mut * dc, err::Err mut *e, FILE mut* unsafe fd, bool i
                 fprintf(fd,"\"%.*s\"", dc->value.v_slice.size, dc->value.v_slice.mem);
             }
             Item::Bytes     => {
-                fprintf(fd,"\"bytes\"");
+                fprintf(fd,"\"");
+                for (usize mut i = 0; i < dc->value.v_slice.size; i++) {
+                    unsafe { fprintf(fd, "%02x", dc->value.v_slice.mem[i]); }
+                }
+                fprintf(fd,"\"");
             }
             Item::Map       => {
                 fprintf(fd,"{");
