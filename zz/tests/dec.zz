@@ -1,0 +1,79 @@
+using madpack;
+using err;
+using buffer;
+using <stdio.h>::{stdin, stdout, printf};
+
+
+test string_1size1 {
+    stdin  = {0x8c, 0x01, 'h'}
+    stdout = "\"h\""
+}
+
+test string_1size0 {
+    stdin  = {0x8c, 0x00}
+    stdout = "\"\""
+}
+
+test string_0size1 {
+    stdin  = {0x81, 'h'}
+    stdout = "\"h\""
+}
+
+test string_0size0 {
+    stdin  = {0x80}
+    stdout = "\"\""
+}
+
+test string_0size11 {
+    stdin  = {0x8b, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
+    stdout = "\"hello world\""
+}
+
+test string_2size11 {
+    stdin  = {0x8d, 11, 0, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
+    stdout = "\"hello world\""
+}
+
+test string_4size11 {
+    stdin  = {0x8e, 11, 0, 0, 0, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
+    stdout = "\"hello world\""
+}
+
+test string_8size11 {
+    stdin  = {0x8f, 11,0,0,0,0,0,0,0, 'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}
+    stdout = "\"hello world\""
+}
+
+test string_2size0 {
+    stdin  = {0x8d, 0,0}
+    stdout = "\"\""
+}
+
+test string_4size0 {
+    stdin  = {0x8e, 0,0,0,0}
+    stdout = "\"\""
+}
+
+test string_8size0 {
+    stdin  = {0x8f, 0,0,0,0, 0,0,0,0}
+    stdout = "\"\""
+}
+
+test map_kvstr {
+    stdin = {0x7b, 0x9d, 0x05, 'h', 'o', 'l', 'l', 'a', 0x05, 'w', 'u', 'r', 's', 't'}
+    stdout = "{\"holla\":\"wurst\"}"
+}
+
+pub fn main() int{
+    new+1000 e = err::make();
+    new+1000000 bi = buffer::make();
+    while bi.fread(stdin) {};
+
+    new dc = madpack::decode(bi.as_slice(), 0);
+    madpack::to_json(&dc, &e, stdout, false, 0, false);
+    if err::check(&e) {
+        e.elog();
+        return 3;
+    }
+    return 0;
+}

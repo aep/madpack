@@ -90,23 +90,23 @@ if you ever loose the index, you can still read the message and guess the key na
 
 ### key byte
 
-    000x xxxx 0x00 u8
-    001x xxxx 0x20 u16
-    010x xxxx 0x40 f32
-    011x xxxx 0x60 bytes  u8
-    100x xxxx 0x80 string u8
-    101x xxxx 0xa0 map
-    110x xxxx 0xc0 array
+    000x xxxx 0x00 value is u8
+    001x xxxx 0x20 value is u16
+    010x xxxx 0x40 value is f32
+    011x xxxx 0x60 value is bytes  u8
+    100x xxxx 0x80 value is string u8
+    101x xxxx 0xa0 value is map
+    110x xxxx 0xc0 value is array
     111x xxxx 0xe0 full value byte follows
 
 
     xxx0 0000 0x00 reserved
-    xxx0 0001 0x01 index 1
-    xxx1 1010 0x1a index 26
-    xxx1 1011 0x1b u8
-    xxx1 1100 0x1c u16
-    xxx1 1101 0x1d string u8
-    xxx1 1110 0x1e string u16
+    xxx0 0001 0x01 key number 1
+    xxx1 1010 0x1a key number 26
+    xxx1 1011 0x1b key number as a u8
+    xxx1 1100 0x1c key number as a u16
+    xxx1 1101 0x1d key is a string size u8
+    xxx1 1110 0x1e key is a string size u16
 
     1111 1111 0xff end
 

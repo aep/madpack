@@ -35,3 +35,8 @@ name = "madpack"
 type = "cmake"
 main = "madpack::main"
 
+
+[[artifacts]]
+type = "go"
+name = "madpack"
+main = "madpack"

@@ -134,15 +134,8 @@ fn lookup(Index mut*self, u16 mut i) -> slice::slice::Slice
     return sl;
 }
 
-
-export struct Tuning {
-    u8 config;
-}
-
-
 export struct Encoder {
     slice::mut_slice::MutSlice  sl;
-    Tuning tuning;
     Index mut * unsafe index;
 }
 
