@@ -169,19 +169,19 @@ func (self *Decoder) DecodeMap() (r map[string]interface{}, eee error) {
                 var vv uint8;
                 err = binary.Read(self.R, binary.LittleEndian, &vv)
                 if err != nil { return nil, err }
-                value = vv;
+                value = uint64(vv);
             }
             case 0x20: {
                 var vv uint16;
                 err = binary.Read(self.R, binary.LittleEndian, &vv)
                 if err != nil { return nil, err }
-                value = vv;
+                value = uint64(vv);
             }
             case 0x40: {
                 var vv float32;
                 err = binary.Read(self.R, binary.LittleEndian, &vv)
                 if err != nil { return nil, err }
-                value = vv;
+                value = float64(vv);
             }
             case 0x60: {
                 var vv uint8;
