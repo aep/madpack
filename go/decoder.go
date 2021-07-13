@@ -5,6 +5,7 @@ import (
     "fmt"
     "reflect"
     "encoding/binary"
+    "errors"
 )
 
 type Decoder struct {
@@ -14,6 +15,13 @@ type Decoder struct {
 
 func NewDecoder(r io.Reader) *Decoder {
     return &Decoder{R: r, Index: EmptyIndex()}
+}
+
+func NewDecoderWithIndex(r io.Reader, i* Index) *Decoder{
+    if i == nil {
+        i = EmptyIndex()
+    }
+    return &Decoder{R: r, Index: i}
 }
 
 type End struct {}
@@ -89,11 +97,11 @@ func (self *Decoder) DecodeArray() (r []interface{}, eee error) {
 }
 
 func (self *Decoder) DecodeMap() (r map[string]interface{}, eee error) {
-    //defer func() {
-    //    if r := recover(); r != nil {
-    //        eee  = fmt.Errorf("%w", r)
-    //    }
-    //}()
+    defer func() {
+        if r := recover(); r != nil {
+            eee  = fmt.Errorf("%w", r)
+        }
+    }()
 
     r = make(map[string]interface{})
 
@@ -102,7 +110,12 @@ func (self *Decoder) DecodeMap() (r map[string]interface{}, eee error) {
 
         var eb [1]byte
         _, err := io.ReadFull(self.R, eb[:])
-        if err != nil { return nil, err }
+        if err != nil {
+            if errors.Is(err, io.EOF) {
+                err = nil
+            }
+            return r , err
+        }
 
         var key_str = "";
         var value interface{}
@@ -145,6 +158,9 @@ func (self *Decoder) DecodeMap() (r map[string]interface{}, eee error) {
             case 0x1f: {
                 return r, nil
             }
+            default:
+                key_str = self.Index.Lookup(uint(eb[0] & 0x1f))
+
         }
 
         var vt = eb[0] & 0xe0;
@@ -198,6 +214,7 @@ func (self *Decoder) DecodeMap() (r map[string]interface{}, eee error) {
                 if err != nil { return nil, err }
             }
         }
+
         r[key_str] = value
     }
 }

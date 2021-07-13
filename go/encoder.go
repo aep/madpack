@@ -16,6 +16,13 @@ func NewEncoder(w io.Writer) *Encoder{
     return &Encoder{W: w, Index: EmptyIndex()}
 }
 
+func NewEncoderWithIndex(w io.Writer, i* Index) *Encoder{
+    if i == nil {
+        i = EmptyIndex()
+    }
+    return &Encoder{W: w, Index: i}
+}
+
 
 func (self *Encoder) EncodeUint(value uint64) (err error) {
     if value <= 111 {
@@ -221,6 +228,10 @@ func (self *Encoder) EncodeKey(key string, valuetype uint8) (err error) {
     return nil
 }
 
+func isIntegral(val float64) bool {
+	return val == float64(int64(val))
+}
+
 func (self *Encoder) EncodeValue(v interface{}) (err error) {
     var rv = reflect.ValueOf(v)
     switch rv.Kind() {
@@ -263,8 +274,36 @@ func (self *Encoder) EncodeValue(v interface{}) (err error) {
         }
     case reflect.String:
         return self.EncodeBytes([]byte(rv.String()), 0x80)
-
-    default:
+    case reflect.Float32:
+        if isIntegral(float64(v.(float32))) {
+            return self.EncodeValue(int64(v.(float32)))
+        }
+        _,err = self.W.Write([]byte{0x7d})
+        if err != nil { return err }
+        err = binary.Write(self.W, binary.LittleEndian, v.(float32))
+        if err != nil { return err }
+        return nil
+    case reflect.Float64:
+        if isIntegral(v.(float64)) {
+            return self.EncodeValue(int64(v.(float64)))
+        }
+        _,err = self.W.Write([]byte{0x7e})
+        if err != nil { return err }
+        err = binary.Write(self.W, binary.LittleEndian, v.(float64))
+        if err != nil { return err }
+        return nil
+    case reflect.Invalid:
+        _,err = self.W.Write([]byte{0x78})
+        if err != nil { return err }
+        return nil
+    case reflect.Interface, reflect.Ptr:
+        if rv.IsNil() {
+            _,err = self.W.Write([]byte{0x78})
+            if err != nil { return err }
+            return nil
+        }
         return fmt.Errorf("cannot encode %T", v)
+    default:
+        return fmt.Errorf("cannot encode %T %d", v, rv.Kind())
     }
 }
